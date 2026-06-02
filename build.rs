@@ -46,8 +46,11 @@ fn main() {
                 println!("cargo:rustc-link-arg={}", gcc_version.join(crt_object).to_str().unwrap());
             }
 
+            let ld_script_path = fs::canonicalize("ldscript.ld").unwrap();
+            let ld_script_path = ld_script_path.to_str().unwrap();
             println!("cargo:rustc-link-arg=-T");
-            println!("cargo:rustc-link-arg={}", fs::canonicalize("ldscript.ld").unwrap().to_str().unwrap());
+            println!("cargo:rustc-link-arg={ld_script_path}");
+            println!("cargo:rerun-if-changed={ld_script_path}");
 
             for flag in ["-nostdlib", "-nostdlib++", "-Wl,-z,norelro", "-Wl,-z,max-page-size=4096", "-Wl,--no-eh-frame-hdr"] {
                 println!("cargo:rustc-link-arg={flag}");

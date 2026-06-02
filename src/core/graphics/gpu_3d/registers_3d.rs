@@ -5,17 +5,18 @@ use crate::core::graphics::gpu_3d::matrix_vec::MatrixVec;
 use crate::core::memory::dma::DmaTransferMode;
 use crate::core::CpuType::ARM9;
 use crate::fast_fixed_fifo::FastFixedFifo;
-use crate::logging::debug_println;
 use crate::math::{vdot_vec3, vmult_mat4, vmult_vec3_mat3_no_store, Matrix, Vectorf32, Vectori16, Vectori32, MTX_IDENTITY};
+use crate::utils;
 use crate::utils::HeapMem;
 use bilge::prelude::*;
 use paste::paste;
 use std::arch::arm::{
     int32x4_t, vcombine_s32, vget_high_s32, vget_low_s32, vld1_s32, vld1q_s32, vld1q_s32_x3, vld1q_s32_x4, vnegq_s32, vsetq_lane_s32, vshrq_n_s32, vst1q_s32, vst1q_s32_x4, vsub_s32,
 };
+use std::arch::{asm, naked_asm};
 use std::cmp::max;
 use std::hint::assert_unchecked;
-use std::intrinsics::{likely, unlikely};
+use std::intrinsics::unlikely;
 use std::{mem, ptr};
 
 pub const POLYGON_LIMIT: usize = 8192;
@@ -176,22 +177,22 @@ pub struct SwapBuffers {
 #[bitsize(8)]
 #[derive(Copy, Clone, Default, FromBits)]
 pub struct FifoParam {
-    param_count: u6,
-    is_test: bool,
     can_skip: bool,
+    is_test: bool,
+    param_count: u6,
 }
 
 const fn count(c: u8) -> u8 {
     assert!(c <= 32);
-    c
+    c << 2
 }
 
 const fn skip(c: u8) -> u8 {
-    count(c) | (1 << 7)
+    count(c) | 1
 }
 
 const fn test(c: u8) -> u8 {
-    count(c) | (1 << 6)
+    count(c) | (1 << 1)
 }
 
 #[rustfmt::skip]
@@ -206,15 +207,135 @@ const FIFO_PARAM_COUNTS: [u8; 128] = [
     test(3), test(2), test(1), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), skip(0), // 0x70-0x7F
 ];
 
-const FUNC_GROUP_LUT: [fn(&mut Gpu3DRegisters, cmd: usize, params: &[u32; 32]); 8] = [
-    Gpu3DRegisters::exe_empty_group,
-    Gpu3DRegisters::exe_mat_group,
-    Gpu3DRegisters::exe_vert_group,
-    Gpu3DRegisters::exe_attr_group,
+const FUNC_LUT: [fn(&mut Gpu3DRegisters, params: &[u32; 32]); 128] = [
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_mtx_mode,
+    Gpu3DRegisters::exe_mtx_push,
+    Gpu3DRegisters::exe_mtx_pop,
+    Gpu3DRegisters::exe_mtx_store,
+    Gpu3DRegisters::exe_mtx_restore,
+    Gpu3DRegisters::exe_mtx_identity,
+    Gpu3DRegisters::exe_mtx_load44,
+    Gpu3DRegisters::exe_mtx_load43,
+    Gpu3DRegisters::exe_mtx_mult44,
+    Gpu3DRegisters::exe_mtx_mult43,
+    Gpu3DRegisters::exe_mtx_mult33,
+    Gpu3DRegisters::exe_mtx_scale,
+    Gpu3DRegisters::exe_mtx_trans,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_color,
+    Gpu3DRegisters::exe_normal,
+    Gpu3DRegisters::exe_tex_coord,
+    Gpu3DRegisters::exe_vtx16,
+    Gpu3DRegisters::exe_vtx10,
+    Gpu3DRegisters::exe_vtx_x_y,
+    Gpu3DRegisters::exe_vtx_x_z,
+    Gpu3DRegisters::exe_vtx_y_z,
+    Gpu3DRegisters::exe_vtx_diff,
+    Gpu3DRegisters::exe_polygon_attr,
+    Gpu3DRegisters::exe_tex_image_param,
+    Gpu3DRegisters::exe_pltt_base,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_dif_amb,
+    Gpu3DRegisters::exe_spe_emi,
+    Gpu3DRegisters::exe_light_vector,
+    Gpu3DRegisters::exe_light_color,
+    Gpu3DRegisters::exe_shininess,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
     Gpu3DRegisters::exe_begin_vtxs,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
     Gpu3DRegisters::exe_swap_buffers,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
     Gpu3DRegisters::exe_viewport,
-    Gpu3DRegisters::exe_test_group,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_box_test,
+    Gpu3DRegisters::exe_pos_test,
+    Gpu3DRegisters::exe_vec_test,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
+    Gpu3DRegisters::exe_empty,
 ];
 
 #[bitsize(2)]
@@ -564,53 +685,109 @@ impl Emu {
 
         let is_cmd_fifo_half_full = regs_3d.is_cmd_fifo_half_full();
 
-        let cycle_diff = total_cycles - regs_3d.last_total_cycles;
+        let mut cycle_diff = utils::align_up((total_cycles - regs_3d.last_total_cycles - 1) as usize, 4);
         regs_3d.last_total_cycles = total_cycles;
-        let mut executed_cycles = 0;
 
-        let mut consumed = 0;
-        let len = regs_3d.cmd_fifo.len();
-        'outer: while likely(consumed < len) {
-            let mut value = regs_3d.cmd_fifo[consumed];
-            consumed += 1;
+        let fifo_ptr = regs_3d.cmd_fifo.front_ptr_mut();
+        let fifo_ptr_end = unsafe { fifo_ptr.add(regs_3d.cmd_fifo.len()) };
+        let mut consumed = fifo_ptr;
+        let fifo_param_counts = FIFO_PARAM_COUNTS.as_ptr();
+        let func_lut_ptr = FUNC_LUT.as_ptr();
+        let regs3d_ptr = regs_3d as *mut _ as usize;
+        let skip_mask = regs_3d.flags.skip() as usize;
 
-            while likely(value != 0) {
-                let cmd = (value & 0x7F) as usize;
-                let current_value = value;
-                value >>= 8;
-                if unlikely(cmd == 0) {
-                    continue;
-                }
-                let param_count = FifoParam::from(unsafe { *FIFO_PARAM_COUNTS.get_unchecked(cmd) });
-                let count = u8::from(param_count.param_count()) as usize;
-
-                if unlikely((count + consumed) > len) {
-                    consumed -= 1;
-                    regs_3d.cmd_fifo[consumed] = current_value;
-                    break 'outer;
-                }
-
-                let skippable = param_count.can_skip();
-                if !regs_3d.flags.skip() || likely(!skippable) {
-                    unsafe {
-                        let func = FUNC_GROUP_LUT.get_unchecked(cmd >> 4);
-                        let ptr = regs_3d.cmd_fifo.front_ptr().add(consumed);
-                        func(regs_3d, cmd & 0xF, mem::transmute(ptr));
-                    }
-                }
-                consumed += count;
-
-                executed_cycles += 4;
-                if unlikely(executed_cycles >= cycle_diff || cmd == 0x50) {
-                    if value != 0 {
-                        consumed -= 1;
-                        regs_3d.cmd_fifo[consumed] = value;
-                    }
-                    break 'outer;
-                }
-            }
+        unsafe {
+            asm!(
+                ".p2align 5",
+                "1:",
+                "ldr r8, [r4], #4", // value = fifo[consumed]
+                "2:",
+                    "ands r1, r8, #0x7F", // cmd = current_value & 0x7F
+                    "ldrb r3, [{fifo_param_counts}, r1]", // param = FIFO_PARAMS_COUNT[cmd]
+                    "it ne",
+                    "subne r5, #4", // cycle_diff -= 4
+                    "bic r2, r3, #0x3",
+                    "add r4, r2", // consumed += count
+                    "cmp r4, r11", // consumed > len break out
+                    "bhi 2f",
+                    "ands r3, {skip_mask}", // can_skip = param & skip_mask
+                    "bne 3f", // can_skip != 0 skip execution
+                    "ldr r3, [r10, r1, lsl #2]", // func = FUNC_LUT[func_index]
+                    "subs r1, r4, r2", // fifo_param_offset = consumed - count
+                    "mov r0, r9", // arg0 = &mut regs3d
+                    "blx r3", // func(&mut regs3d, param_ptr)
+                    // swap buffer will directly jump to 4f with lr + 0xC
+                    "3:",
+                    "cbz r5, 4f", // cycle_diff == 0 breakout
+                    "lsrs r8, #8",
+                    "bne 2b",
+                    "cmp r4, r11",
+                    "blo 1b",
+                "4:",
+                "lsrs r8, #8",
+                "it ne", // value != 0
+                "strne r8, [r4, #-4]!", // fifo[--consumed1] = value
+                "b 1f",
+                "2:",
+                "subs r4, r2", // consumed -= count
+                "str r8, [r4, #-4]!", // fifo[--consumed] = current_value
+                "1:",
+                inout("r4") consumed,
+                out("r8") _,
+                fifo_param_counts = in(reg) fifo_param_counts,
+                skip_mask = in(reg) skip_mask,
+                inout("r5") cycle_diff,
+                in("r9") regs3d_ptr,
+                in("r10") func_lut_ptr,
+                in("r11") fifo_ptr_end,
+                out("r0") _, out("r1") _, out("r2") _, out("r3") _, out("r12") _, out("lr") _,
+                clobber_abi("C"),
+                options(nostack),
+            );
         }
-        regs_3d.cmd_fifo.pop_front_multiple(consumed);
+
+        // 'outer: while likely(consumed < len) {
+        //     let mut value = regs_3d.cmd_fifo[consumed];
+        //     consumed += 1;
+        //
+        //     while likely(value != 0) {
+        //         let cmd = (value & 0x7F) as usize;
+        //         let current_value = value;
+        //         value >>= 8;
+        //         if unlikely(cmd == 0) {
+        //             continue;
+        //         }
+        //         let param_count = FifoParam::from(unsafe { *FIFO_PARAM_COUNTS.get_unchecked(cmd) });
+        //         let count = u8::from(param_count.param_count()) as usize;
+        //
+        //         if unlikely((count + consumed) > len) {
+        //             consumed -= 1;
+        //             regs_3d.cmd_fifo[consumed] = current_value;
+        //             break 'outer;
+        //         }
+        //
+        //         let skippable = param_count.can_skip();
+        //         if !regs_3d.flags.skip() || likely(!skippable) {
+        //             unsafe {
+        //                 let func = FUNC_GROUP_LUT.get_unchecked(cmd >> 4);
+        //                 let ptr = regs_3d.cmd_fifo.front_ptr().add(consumed);
+        //                 func(regs_3d, cmd & 0xF, mem::transmute(ptr));
+        //             }
+        //         }
+        //         consumed += count;
+        //
+        //         executed_cycles += 4;
+        //         if unlikely(executed_cycles >= cycle_diff || cmd == 0x50) {
+        //             if value != 0 {
+        //                 consumed -= 1;
+        //                 regs_3d.cmd_fifo[consumed] = value;
+        //             }
+        //             break 'outer;
+        //         }
+        //     }
+        // }
+
+        regs_3d.cmd_fifo.pop_front_multiple((consumed as usize - fifo_ptr as usize) >> 2);
 
         regs_3d.flags.set_test_queue_dirty(true);
 
@@ -854,138 +1031,6 @@ impl Gpu3DRegisters {
     pub fn is_flushed(&self) -> bool {
         self.flags.flushed()
     }
-
-    fn exe_mat_group(&mut self, cmd: usize, params: &[u32; 32]) {
-        unsafe { assert_unchecked(cmd <= 0xF) };
-        const FUNC_LUT: [fn(&mut Gpu3DRegisters, params: &[u32; 32]); 16] = [
-            Gpu3DRegisters::exe_mtx_mode,
-            Gpu3DRegisters::exe_mtx_push,
-            Gpu3DRegisters::exe_mtx_pop,
-            Gpu3DRegisters::exe_mtx_store,
-            Gpu3DRegisters::exe_mtx_restore,
-            Gpu3DRegisters::exe_mtx_identity,
-            Gpu3DRegisters::exe_mtx_load44,
-            Gpu3DRegisters::exe_mtx_load43,
-            Gpu3DRegisters::exe_mtx_mult44,
-            Gpu3DRegisters::exe_mtx_mult43,
-            Gpu3DRegisters::exe_mtx_mult33,
-            Gpu3DRegisters::exe_mtx_scale,
-            Gpu3DRegisters::exe_mtx_trans,
-            Gpu3DRegisters::exe_empty,
-            Gpu3DRegisters::exe_empty,
-            Gpu3DRegisters::exe_empty,
-        ];
-        const FUNC_NAMES_LUT: [&str; 16] = [
-            "exe_mtx_mode",
-            "exe_mtx_push",
-            "exe_mtx_pop",
-            "exe_mtx_store",
-            "exe_mtx_restore",
-            "exe_mtx_identity",
-            "exe_mtx_load44",
-            "exe_mtx_load43",
-            "exe_mtx_mult44",
-            "exe_mtx_mult43",
-            "exe_mtx_mult33",
-            "exe_mtx_scale",
-            "exe_mtx_trans",
-            "exe_empty",
-            "exe_empty",
-            "exe_empty",
-        ];
-        debug_println!("execute mat group {cmd:x}: {}", FUNC_NAMES_LUT[cmd]);
-        FUNC_LUT[cmd](self, params);
-    }
-
-    fn exe_vert_group(&mut self, cmd: usize, params: &[u32; 32]) {
-        unsafe { assert_unchecked(cmd <= 0xF) };
-        const FUNC_LUT: [fn(&mut Gpu3DRegisters, params: &[u32; 32]); 16] = [
-            Gpu3DRegisters::exe_color,
-            Gpu3DRegisters::exe_normal,
-            Gpu3DRegisters::exe_tex_coord,
-            Gpu3DRegisters::exe_vtx16,
-            Gpu3DRegisters::exe_vtx10,
-            Gpu3DRegisters::exe_vtx_x_y,
-            Gpu3DRegisters::exe_vtx_x_z,
-            Gpu3DRegisters::exe_vtx_y_z,
-            Gpu3DRegisters::exe_vtx_diff,
-            Gpu3DRegisters::exe_polygon_attr,
-            Gpu3DRegisters::exe_tex_image_param,
-            Gpu3DRegisters::exe_pltt_base,
-            Gpu3DRegisters::exe_empty,
-            Gpu3DRegisters::exe_empty,
-            Gpu3DRegisters::exe_empty,
-            Gpu3DRegisters::exe_empty,
-        ];
-        const FUNC_NAMES_LUT: [&str; 16] = [
-            "exe_color",
-            "exe_normal",
-            "exe_tex_coord",
-            "exe_vtx16",
-            "exe_vtx10",
-            "exe_vtx_x_y",
-            "exe_vtx_x_z",
-            "exe_vtx_y_z",
-            "exe_vtx_diff",
-            "exe_polygon_attr",
-            "exe_tex_image_param",
-            "exe_pltt_base",
-            "exe_empty",
-            "exe_empty",
-            "exe_empty",
-            "exe_empty",
-        ];
-        debug_println!("execute vert group {cmd:x}: {}", FUNC_NAMES_LUT[cmd]);
-        FUNC_LUT[cmd](self, params);
-    }
-
-    fn exe_attr_group(&mut self, cmd: usize, params: &[u32; 32]) {
-        unsafe { assert_unchecked(cmd <= 0xF) };
-        match cmd {
-            0 => {
-                debug_println!("execute attr group {cmd:x}: exe_dif_amb");
-                self.exe_dif_amb(params);
-            }
-            1 => {
-                debug_println!("execute attr group {cmd:x}: exe_spe_emi");
-                self.exe_spe_emi(params);
-            }
-            2 => {
-                debug_println!("execute attr group {cmd:x}: exe_light_vector");
-                self.exe_light_vector(params);
-            }
-            3 => {
-                debug_println!("execute attr group {cmd:x}: exe_light_color");
-                self.exe_light_color(params);
-            }
-            4 => {
-                debug_println!("execute attr group {cmd:x}: exe_shininess");
-                self.exe_shininess(params);
-            }
-            _ => debug_println!("execute attr group {cmd:x}: exe_empty"),
-        }
-    }
-
-    fn exe_test_group(&mut self, cmd: usize, params: &[u32; 32]) {
-        unsafe { assert_unchecked(cmd <= 0xF) };
-        match cmd {
-            0 => {
-                debug_println!("execute test group {cmd:x}: exe_box_test");
-                self.exe_box_test(params);
-            }
-            1 => {
-                debug_println!("execute test group {cmd:x}: exe_pos_test");
-                self.exe_pos_test(params);
-            }
-            2 => {
-                debug_println!("execute test group {cmd:x}: exe_vec_test");
-                self.exe_vec_test(params);
-            }
-            _ => debug_println!("execute test group {cmd:x}: exe_empty"),
-        }
-    }
-
-    fn exe_empty_group(&mut self, _: usize, _: &[u32; 32]) {}
 
     fn exe_empty(&mut self, _: &[u32; 32]) {}
 
@@ -1438,13 +1483,7 @@ impl Gpu3DRegisters {
         self.cur_shininess.0.copy_from_slice(params);
     }
 
-    fn exe_begin_vtxs(&mut self, cmd: usize, params: &[u32; 32]) {
-        if unlikely(cmd != 0) {
-            return;
-        }
-
-        debug_println!("execute exe_begin_vtxs {cmd:x}");
-
+    fn exe_begin_vtxs(&mut self, params: &[u32; 32]) {
         self.cur_polygon.attr = self.cur_polygon_attr;
         self.cur_polygon.attr.set_primitive_type(PrimitiveType::from((params[0] & 0x3) as u8));
         self.cur_polygon.viewport = self.cur_viewport;
@@ -1453,24 +1492,17 @@ impl Gpu3DRegisters {
         self.flags.set_polygon_dirty(true);
     }
 
-    fn exe_swap_buffers(&mut self, cmd: usize, params: &[u32; 32]) {
-        if unlikely(cmd != 0) {
-            return;
-        }
+    #[unsafe(naked)]
+    fn exe_swap_buffers(&mut self, _: &[u32; 32]) {
+        naked_asm!("add lr, #0xC", "b {}", sym Self::exe_swap_buffers_impl);
+    }
 
-        debug_println!("execute exe_swap_buffers {cmd:x}");
-
+    fn exe_swap_buffers_impl(&mut self, params: &[u32; 32]) {
         self.flags.set_flushed(true);
         self.buffer.swap_buffers = SwapBuffers::from(params[0] as u8);
     }
 
-    fn exe_viewport(&mut self, cmd: usize, params: &[u32; 32]) {
-        if unlikely(cmd != 0) {
-            return;
-        }
-
-        debug_println!("execute exe_viewport {cmd:x}");
-
+    fn exe_viewport(&mut self, params: &[u32; 32]) {
         self.cur_viewport = Viewport::from(params[0]);
     }
 

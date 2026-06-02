@@ -65,6 +65,10 @@ impl<T, const SIZE: usize> FastFixedFifo<T, SIZE> {
         unsafe { (self.vmem.as_ptr() as *const T).add(self.start) }
     }
 
+    pub fn front_ptr_mut(&mut self) -> *mut T {
+        unsafe { (self.vmem.as_mut_ptr() as *mut T).add(self.start) }
+    }
+
     pub fn pop_front(&mut self) {
         self.start = (self.start + 1) % SIZE;
         self.len -= 1;

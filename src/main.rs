@@ -7,6 +7,7 @@
 #![feature(core_intrinsics)]
 #![feature(downcast_unchecked)]
 #![feature(generic_const_exprs)]
+#![feature(naked_functions_rustic_abi)]
 #![feature(ptr_as_ref_unchecked)]
 #![feature(seek_stream_len)]
 #![feature(slice_swap_unchecked)]
