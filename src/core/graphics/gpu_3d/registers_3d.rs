@@ -856,10 +856,10 @@ impl Emu {
     }
 
     #[inline(always)]
-    pub fn regs_3d_set_gx_fifo_multiple<const MEMCPY: bool>(&mut self, values: &[u32]) {
+    pub fn regs_3d_set_gx_fifo_multiple<const FAST_MEMCPY: bool>(&mut self, values: &[u32]) {
         unsafe { assert_unchecked(!values.is_empty()) };
         let regs_3d = &mut self.gpu.gpu_3d_regs;
-        regs_3d.cmd_fifo.push_back_multiple::<MEMCPY>(values);
+        regs_3d.cmd_fifo.push_back_multiple::<FAST_MEMCPY>(values);
         self.regs_3d_post_queue_entry();
     }
 

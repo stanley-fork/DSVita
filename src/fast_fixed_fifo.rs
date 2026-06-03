@@ -1,4 +1,5 @@
 use crate::mmap::{Shm, VirtualMem, PAGE_SIZE};
+use std::arch::arm::{vld4q_u32, vst4q_u32};
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 use std::{
@@ -104,15 +105,19 @@ impl<T, const SIZE: usize> FastFixedFifo<T, SIZE> {
 
 impl<T: Copy, const SIZE: usize> FastFixedFifo<T, SIZE> {
     #[inline(always)]
-    pub fn push_back_multiple<const MEMCPY: bool>(&mut self, values: &[T]) {
+    pub fn push_back_multiple<const FAST_MEMCPY: bool>(&mut self, values: &[T]) {
         let end = self.end;
         self.end = (end + values.len()) % SIZE;
         self.len += values.len();
         debug_assert!(self.len <= SIZE);
         unsafe {
             let ptr = (self.vmem.as_mut_ptr() as *mut T).add(end);
-            if MEMCPY {
-                ptr.copy_from_nonoverlapping(values.as_ptr(), values.len());
+            if FAST_MEMCPY {
+                for i in (0..values.len()).step_by(64 / size_of::<T>()) {
+                    let src_ptr = values.as_ptr().add(i);
+                    let values = vld4q_u32(src_ptr as _);
+                    vst4q_u32(ptr.add(i) as _, values);
+                }
             } else {
                 for i in 0..values.len() {
                     ptr.add(i).write(values[i]);
