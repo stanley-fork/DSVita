@@ -27,6 +27,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install clang 21
+        run: curl https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+
       - name: Checkout vitasdk
         uses: actions/checkout@v4
         with:
