@@ -15,7 +15,6 @@
 #![feature(stmt_expr_attributes)]
 #![feature(vec_push_within_capacity)]
 
-use crate::core::cycle_manager::EventType;
 use crate::core::emu::Emu;
 use crate::core::graphics::gl_utils::create_shader;
 use crate::core::graphics::gpu::{Gpu, DISPLAY_HEIGHT, DISPLAY_WIDTH};
@@ -81,7 +80,6 @@ fn run_cpu(emu: &mut Emu) {
     info_println!("ARM7 entry addr {arm7_entry_addr:x}");
 
     emu.reset();
-    emu.cm.schedule(0x7FFFFFFF, EventType::Overflow);
 
     emu.mem.shm[regions::GBA_ROM_REGION.shm_offset..regions::GBA_ROM_REGION.shm_offset + regions::GBA_ROM_REGION.size].fill(0xFF);
 

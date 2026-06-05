@@ -1,4 +1,4 @@
-use crate::core::cycle_manager::EventType::{Overflow, SoundAlarm0Hle, Timer0Arm9};
+use crate::core::cycle_manager::EventType::{Last, SoundAlarm0Hle, Timer0Arm9};
 use crate::core::cycle_manager::ImmEventType::{CartridgeWordReadArm9, CpuInterruptArm9, Dma0Arm9, Dma3Arm7};
 use crate::core::emu::Emu;
 use crate::core::CpuType;
@@ -40,7 +40,7 @@ impl ImmEventType {
 
 impl From<u8> for ImmEventType {
     fn from(value: u8) -> Self {
-        debug_assert!(value <= Overflow as u8);
+        debug_assert!(value < Last as u8);
         unsafe { mem::transmute(value) }
     }
 }
@@ -70,7 +70,7 @@ pub enum EventType {
     SoundAlarm7Hle = 19,
     WifiScanHle = 20,
     MicSampleHle = 21,
-    Overflow = 22,
+    Last = 22,
 }
 
 impl EventType {
@@ -85,14 +85,14 @@ impl EventType {
 
 impl From<u8> for EventType {
     fn from(value: u8) -> Self {
-        debug_assert!(value <= Overflow as u8);
+        debug_assert!(value < Last as u8);
         unsafe { mem::transmute(value) }
     }
 }
 
 pub struct CycleManager {
     cycle_count: u32,
-    events: [u32; Overflow as usize + 1],
+    events: [u32; Last as usize],
     next_event_cycle: u32,
     active_events: u32,
     active_imm_events: u32,
@@ -102,7 +102,7 @@ impl CycleManager {
     pub fn new() -> Self {
         CycleManager {
             cycle_count: 0,
-            events: [0; Overflow as usize + 1],
+            events: [0; Last as usize],
             next_event_cycle: u32::MAX,
             active_events: 0,
             active_imm_events: 0,
@@ -111,7 +111,7 @@ impl CycleManager {
 
     pub fn init(&mut self) {
         self.cycle_count = 0;
-        self.events = [0; Overflow as usize + 1];
+        self.events = [0; Last as usize];
         self.next_event_cycle = u32::MAX;
         self.active_events = 0;
         self.active_imm_events = 0;
@@ -165,7 +165,7 @@ impl Emu {
             Emu::dma_on_event3::<{ ARM7 }>,
         ];
 
-        const LUT: [fn(&mut Emu); Overflow as usize + 1] = [
+        const LUT: [fn(&mut Emu); Last as usize] = [
             Emu::gpu_on_scanline256_event,
             Emu::gpu_on_scanline355_event,
             Emu::spu_on_sample_event,
@@ -188,7 +188,6 @@ impl Emu {
             Emu::sound_nitro_on_alarm_event::<7>,
             Emu::wifi_hle_on_scan_event,
             Emu::mic_hle_sample_event,
-            Emu::cm_on_overflow_event,
         ];
 
         let mut active_imm_events = self.cm.active_imm_events;
@@ -205,7 +204,8 @@ impl Emu {
             offset += zeros + 1;
         }
 
-        if likely(self.cm.cycle_count < self.cm.next_event_cycle) {
+        let cycle_count = self.cm.cycle_count;
+        if likely(cycle_count < self.cm.next_event_cycle) {
             return false;
         }
 
@@ -218,7 +218,7 @@ impl Emu {
             let event_index = (zeros + offset) as usize;
 
             let event_cycle = unsafe { *self.cm.events.get_unchecked(event_index) };
-            if event_cycle <= self.cm.cycle_count {
+            if event_cycle <= cycle_count {
                 self.cm.active_events &= !(1 << (31 - event_index));
                 let func = unsafe { LUT.get_unchecked(event_index) };
                 func(self);
@@ -230,9 +230,14 @@ impl Emu {
             offset += zeros + 1;
             active_events != 0
         } {}
+
+        if unlikely(cycle_count > 0x7FFFFFFF) {
+            self.cm_on_overflow_event();
+        }
         true
     }
 
+    #[inline(never)]
     fn cm_on_overflow_event(&mut self) {
         for i in 0..self.cm.events.len() {
             if self.cm.active_events & (1 << (31 - i)) != 0 {
@@ -260,6 +265,5 @@ impl Emu {
             self.spi.mic_sample_cycle -= self.cm.cycle_count;
         }
         self.cm.cycle_count = 0;
-        self.cm.schedule(0x7FFFFFFF, Overflow);
     }
 }

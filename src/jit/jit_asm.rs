@@ -189,21 +189,22 @@ impl JitBuf {
 pub const RETURN_STACK_SIZE: usize = 64;
 pub const MAX_STACK_DEPTH_SIZE: usize = 9 * 1024 * 1024;
 
-#[bitsize(32)]
+#[bitsize(8)]
 #[derive(FromBits)]
 struct JitRuntimeDataPacked {
-    return_stack_ptr: u30,
     in_interrupt: bool,
     idle_loop: bool,
+    _unused: u6,
 }
 
 #[repr(C, align(32))]
 pub struct JitRuntimeData {
-    data_packed: JitRuntimeDataPacked,
     pub accumulated_cycles: u16,
     pub pre_cycle_count_sum: u16,
-    pub host_sp: usize,
+    data_packed: JitRuntimeDataPacked,
+    return_stack_ptr: u8,
     pub return_stack: [u32; RETURN_STACK_SIZE],
+    pub host_sp: usize,
     pub interrupt_sp: usize,
     #[cfg(debug_assertions)]
     branch_out_pc: u32,
@@ -215,6 +216,7 @@ impl JitRuntimeData {
             pre_cycle_count_sum: 0,
             accumulated_cycles: 0,
             host_sp: 0,
+            return_stack_ptr: 0,
             data_packed: JitRuntimeDataPacked::from(0),
             return_stack: [u32::MAX; RETURN_STACK_SIZE],
             interrupt_sp: 0,
@@ -290,7 +292,7 @@ impl JitRuntimeData {
     }
 
     pub fn get_return_stack_ptr(&self) -> usize {
-        u32::from(self.data_packed.return_stack_ptr()) as usize
+        self.return_stack_ptr as usize
     }
 
     pub fn push_return_stack(&mut self, value: u32) {
@@ -299,14 +301,14 @@ impl JitRuntimeData {
         return_stack_ptr += 1;
         return_stack_ptr &= RETURN_STACK_SIZE - 1;
         unsafe { *self.return_stack.get_unchecked_mut(return_stack_ptr) = u32::MAX };
-        self.data_packed.set_return_stack_ptr(u30::new(return_stack_ptr as u32));
+        self.return_stack_ptr = return_stack_ptr as u8;
     }
 
     pub fn pop_return_stack(&mut self) -> u32 {
         let mut return_stack_ptr = self.get_return_stack_ptr();
         return_stack_ptr = return_stack_ptr.wrapping_sub(1);
         return_stack_ptr &= RETURN_STACK_SIZE - 1;
-        self.data_packed.set_return_stack_ptr(u30::new(return_stack_ptr as u32));
+        self.return_stack_ptr = return_stack_ptr as u8;
         unsafe { *self.return_stack.get_unchecked(return_stack_ptr) }
     }
 
@@ -317,7 +319,7 @@ impl JitRuntimeData {
     }
 
     pub fn clear_return_stack_ptr(&mut self) {
-        self.data_packed.set_return_stack_ptr(u30::new(0));
+        self.return_stack_ptr = 0;
         self.return_stack[RETURN_STACK_SIZE - 1] = u32::MAX;
     }
 }

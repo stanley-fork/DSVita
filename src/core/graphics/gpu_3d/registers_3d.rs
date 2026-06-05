@@ -746,8 +746,15 @@ impl Emu {
             );
         }
 
+        regs_3d.cmd_fifo.pop_front_multiple((consumed as usize - fifo_ptr as usize) >> 2);
+
+        // let mut consumed = 0;
+        // let len = regs_3d.cmd_fifo.len();
+        // let mut executed_cycles = 0;
+        // let can_skip = regs_3d.flags.skip();
+        // let front_ptr = regs_3d.cmd_fifo.front_ptr();
         // 'outer: while likely(consumed < len) {
-        //     let mut value = regs_3d.cmd_fifo[consumed];
+        //     let mut value = unsafe { front_ptr.add(consumed).read() };
         //     consumed += 1;
         //
         //     while likely(value != 0) {
@@ -767,11 +774,11 @@ impl Emu {
         //         }
         //
         //         let skippable = param_count.can_skip();
-        //         if !regs_3d.flags.skip() || likely(!skippable) {
+        //         if !can_skip || likely(!skippable) {
         //             unsafe {
-        //                 let func = FUNC_GROUP_LUT.get_unchecked(cmd >> 4);
-        //                 let ptr = regs_3d.cmd_fifo.front_ptr().add(consumed);
-        //                 func(regs_3d, cmd & 0xF, mem::transmute(ptr));
+        //                 let func = FUNC_LUT.get_unchecked(cmd);
+        //                 let ptr = front_ptr.add(consumed);
+        //                 func(regs_3d, mem::transmute(ptr));
         //             }
         //         }
         //         consumed += count;
@@ -786,8 +793,8 @@ impl Emu {
         //         }
         //     }
         // }
-
-        regs_3d.cmd_fifo.pop_front_multiple((consumed as usize - fifo_ptr as usize) >> 2);
+        //
+        // regs_3d.cmd_fifo.pop_front_multiple(consumed);
 
         regs_3d.flags.set_test_queue_dirty(true);
 

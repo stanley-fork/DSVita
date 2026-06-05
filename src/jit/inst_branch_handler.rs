@@ -6,6 +6,7 @@ use crate::logging::debug_println;
 use crate::settings::Arm7Emu;
 use crate::{get_jit_asm_ptr, BRANCH_LOG, CURRENT_RUNNING_CPU, IS_DEBUG};
 use std::cmp::min;
+use std::hint::assert_unchecked;
 use std::intrinsics::{likely, unlikely};
 use std::mem;
 
@@ -95,7 +96,10 @@ pub extern "C" fn handle_interrupt(asm: *mut JitAsm, target_pc: u32, current_pc:
 }
 
 fn flush_cycles<const CPU: CpuType>(asm: &mut JitAsm, total_cycles: u16, current_pc: u32) {
-    asm.runtime_data.accumulated_cycles += total_cycles + 2 - asm.runtime_data.pre_cycle_count_sum;
+    let mut cycles = asm.runtime_data.accumulated_cycles as u32;
+    cycles += total_cycles as u32 + 2 - asm.runtime_data.pre_cycle_count_sum as u32;
+    unsafe { assert_unchecked(cycles <= u16::MAX as u32) };
+    asm.runtime_data.accumulated_cycles = cycles as u16;
     debug_println!("{CPU:?} flush cycles {} at {current_pc:x}", asm.runtime_data.accumulated_cycles);
 }
 

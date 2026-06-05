@@ -567,7 +567,11 @@ impl Drop for MacroAssembler {
 
 impl MasmLdr2<Reg, u32> for MacroAssembler {
     fn ldr2(&mut self, reg: Reg, v: u32) {
-        if self.isa == InstructionSet_T32 && reg.is_low() {
+        let single_mov = v & 0xFFFF == v || {
+            let shifted = v >> v.trailing_zeros();
+            shifted & 0x1F == shifted
+        };
+        if !single_mov && (self.isa == InstructionSet_T32 && reg.is_low()) {
             self.ldr3(Cond::AL, reg, v)
         } else {
             self.mov4(FlagsUpdate_LeaveFlags, Cond::AL, reg, &v.into());
