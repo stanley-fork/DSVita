@@ -197,7 +197,7 @@ lazy_static! {
                 false,
             ),
             Setting::new("Geometry 3D frameskip",
-                "Don't calculate new frames when old ones in queue haven't been consumed yet. Increases latency and might introduce\nglitches, however gives a performance boost. Disable when playing games that use 3D on both screens",
+                "Don't calculate new frames when old ones in queue haven't been consumed yet. Increases latency and might introduce\nglitches, however gives a performance boost. Disable when playing games that use 3D on both screens or the game has\nvisual glitches.",
                 SettingValue::Bool(true),
                 true),
             Setting::new("Upscale 3D factor", "Upscale 3D polygons, will decrease framerate when set too high", Gpu3DRenderer::upscale_factor_settings_value(), true),

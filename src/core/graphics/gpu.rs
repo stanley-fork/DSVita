@@ -226,6 +226,7 @@ impl Emu {
                     self.gpu.pow_cnt1,
                     self.gpu.disp_cap_cnt,
                     &mut self.gpu.gpu_3d_regs,
+                    !self.settings.geometry_3d_skip(),
                     &mut self.breakout_imm,
                 );
 

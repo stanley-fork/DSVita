@@ -48,7 +48,7 @@ impl GpuMemBuf {
 
     pub fn read_vram(&mut self, vram_banks: &mut VramBanks) {
         vram_banks.copy_dirty_sections(&mut self.vram_banks.mem);
-        self.vram_banks_dirty_sections = vram_banks.dirty_sections;
+        self.vram_banks_dirty_sections += vram_banks.dirty_sections;
         vram_banks.dirty_sections.clear();
     }
 
@@ -60,6 +60,7 @@ impl GpuMemBuf {
     pub fn use_queued_vram(&mut self) {
         self.vram.cnt = self.queued_vram_cnt;
         self.vram_banks.dirty_sections += self.vram_banks_dirty_sections;
+        self.vram_banks_dirty_sections.clear();
     }
 
     pub fn rebuild_vram_maps(&mut self) {

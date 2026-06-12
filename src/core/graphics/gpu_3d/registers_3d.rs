@@ -685,7 +685,11 @@ impl Emu {
 
         let is_cmd_fifo_half_full = regs_3d.is_cmd_fifo_half_full();
 
-        let mut cycle_diff = utils::align_up((total_cycles - regs_3d.last_total_cycles - 1) as usize, 4);
+        let mut cycle_diff = total_cycles - regs_3d.last_total_cycles;
+        if cycle_diff != 0 {
+            cycle_diff -= 1;
+        }
+        let mut cycle_diff = utils::align_up(cycle_diff as usize, 4);
         regs_3d.last_total_cycles = total_cycles;
 
         let fifo_ptr = regs_3d.cmd_fifo.front_ptr_mut();

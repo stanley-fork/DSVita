@@ -88,9 +88,6 @@ pub struct GpuRenderer {
     render_time_measure_count: u8,
     render_time_sum: u32,
     average_render_time: u32,
-
-    read_vram: Mutex<()>,
-    read_vram_condvar: Condvar,
 }
 
 impl GpuRenderer {
@@ -198,9 +195,6 @@ impl GpuRenderer {
             render_time_measure_count: 0,
             render_time_sum: 0,
             average_render_time: 0,
-
-            read_vram: Mutex::new(()),
-            read_vram_condvar: Condvar::new(),
         }
     }
 
@@ -231,6 +225,7 @@ impl GpuRenderer {
         pow_cnt1: PowCnt1,
         disp_cap_cnt: DispCapCnt,
         registers_3d: &mut Gpu3DRegisters,
+        sync_3d: bool,
         breakout_imm: &mut bool,
     ) {
         if self.sample_2d {
@@ -239,8 +234,7 @@ impl GpuRenderer {
             self.common.pow_cnt1[1] = pow_cnt1;
             self.common.disp_cap_cnt[1] = disp_cap_cnt;
             self.ready_2d = true;
-            self.sample_2d = false;
-            let _guard = self.read_vram.lock().unwrap();
+            self.sample_2d = sync_3d;
         }
 
         let mut rendering = self.rendering.lock().unwrap();
@@ -265,6 +259,7 @@ impl GpuRenderer {
             }
 
             self.ready_2d = false;
+            self.sample_2d = false;
             self.renderer_3d.on_render_start();
             self.renderer_vram_busy.store(true, Ordering::SeqCst);
             *rendering = true;
@@ -279,7 +274,6 @@ impl GpuRenderer {
     pub fn reload_registers(&mut self, vram: &Vram) {
         if !self.ready_2d && !self.renderer_vram_busy.load(Ordering::SeqCst) {
             self.common.mem_buf.queue_vram(vram);
-            self.read_vram_condvar.notify_one();
             self.renderer_regs_2d_shared.reload_registers();
             self.sample_2d = true;
         }
@@ -731,7 +725,6 @@ impl GpuRenderer {
             *self.processed_3d.lock().unwrap() = false;
             self.rendering_condvar.notify_all();
             self.processed_3d_condvar.notify_one();
-            self.read_vram_condvar.notify_one();
         }
     }
 

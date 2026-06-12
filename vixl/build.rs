@@ -34,7 +34,6 @@ fn main() {
 
     let out_path = get_out_path();
     let vixl_path = Path::new("vixl_src");
-    println!("cargo:rerun-if-changed={}", vixl_path.to_str().unwrap());
 
     let create_vixl_build = |src_files: &[&str]| {
         let mut vixl_build = create_cc_build();
