@@ -196,6 +196,7 @@ lazy_static! {
                 Arm7Emu::iter().into(),
                 false,
             ),
+            Setting::new("HLE OS irq handler", "Use HLE to emulate the irq handler, this gives a performance boost, however might lead to crashes", SettingValue::Bool(true), false),
             Setting::new("Geometry 3D frameskip",
                 "Don't calculate new frames when old ones in queue haven't been consumed yet. Increases latency and might introduce\nglitches, however gives a performance boost. Disable when playing games that use 3D on both screens or the game has\nvisual glitches.",
                 SettingValue::Bool(true),
@@ -216,13 +217,14 @@ lazy_static! {
 }
 
 #[derive(Clone)]
-pub struct Settings([Setting; 15]);
+pub struct Settings([Setting; 16]);
 
 #[repr(u8)]
 enum SettingIndices {
     Framelimit = 0,
     Audio,
     Arm7Emu,
+    HleOsIrqHandler,
     Geometry3DSkip,
     Upscale3DFactor,
     AudioStretching,
@@ -279,6 +281,10 @@ impl Settings {
 
     pub fn arm7_emu(&self) -> Arm7Emu {
         unsafe { Arm7Emu::from(self.0[SettingIndices::Arm7Emu as usize].value.as_list().unwrap_unchecked().0 as u8) }
+    }
+
+    pub fn hle_os_irq_handler(&self) -> bool {
+        unsafe { self.0[SettingIndices::HleOsIrqHandler as usize].value.as_bool().unwrap_unchecked() }
     }
 
     pub fn geometry_3d_skip(&self) -> bool {

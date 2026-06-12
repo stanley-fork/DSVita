@@ -412,6 +412,8 @@ unsafe extern "C" fn hle_os_irqhandler(guest_pc: u32) {
     let asm = get_jit_asm_ptr::<{ ARM9 }>().as_mut_unchecked();
     let regs = ARM9.thread_regs();
 
+    debug_println!("{ARM9:?} Executing hle os irqhandler at {guest_pc:x}");
+
     let irqs = regs.ie & regs.irf;
     if unlikely(regs.ime == 0 || irqs == 0) {
         hle_post_function::<{ ARM9 }>(asm, 18, guest_pc);

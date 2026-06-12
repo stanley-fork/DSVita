@@ -470,7 +470,7 @@ pub extern "C" fn emit_code_block(guest_pc: u32) {
 fn emit_code_block_internal(asm: &mut JitAsm, guest_pc: u32, thumb: bool) {
     let pc_step = if thumb { 2 } else { 4 };
 
-    let is_os_irq_handler = if asm.emu.nitro_sdk_version.is_valid() {
+    let is_os_irq_handler = if asm.emu.settings.hle_os_irq_handler() && asm.emu.nitro_sdk_version.is_valid() {
         if asm.cpu == ARM7 && asm.os_irq_handler_addr & 0xFF000000 != regions::SHARED_WRAM_OFFSET {
             asm.os_irq_handler_addr = asm.emu.mem_read::<{ ARM7 }, u32>(0x380FFFC);
         }
