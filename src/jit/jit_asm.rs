@@ -699,7 +699,7 @@ impl<'a> JitAsm<'a> {
         let pc_step = if thumb { 2 } else { 4 };
 
         let mut min_imm_guest_addr = u32::MAX;
-        while guest_pc + pc_offset < min_imm_guest_addr {
+        loop {
             let pc = guest_pc + pc_offset;
             let inst_info = get_inst_info(cpu, emu, pc);
 
@@ -731,6 +731,9 @@ impl<'a> JitAsm<'a> {
                 break;
             }
 
+            if guest_pc + pc_offset >= min_imm_guest_addr {
+                break;
+            }
             pc_offset += pc_step;
         }
 

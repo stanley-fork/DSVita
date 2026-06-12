@@ -1,37 +1,37 @@
-use crate::core::CpuType;
 use crate::core::emu::Emu;
 use crate::core::memory::io_arm7::io_arm7;
 use crate::core::memory::io_arm9::io_arm9;
 use crate::core::memory::mmu::MMU_PAGE_SHIFT;
 use crate::core::memory::{regions, vram};
 use crate::core::thread_regs::ThreadRegs;
+use crate::core::CpuType;
 use crate::jit::assembler::arm::alu_assembler::AluShiftImm;
 use crate::jit::assembler::arm::transfer_assembler::{LdrStrImm, LdrStrImmSBHD};
 use crate::jit::assembler::block_asm::{BlockAsm, GuestInstMetadata, GuestInstOffset};
 use crate::jit::assembler::{arm, thumb};
 use crate::jit::inst_mem_handler::{
-    InstMemMultipleParams, inst_read_io_mem_handler, inst_read_io_mem_handler_with_cpsr, inst_read_mem_handler, inst_read_mem_handler_multiple, inst_read_mem_handler_multiple_with_cpsr,
-    inst_read_mem_handler_with_cpsr, inst_read64_mem_handler, inst_read64_mem_handler_with_cpsr, inst_write_io_mem_handler, inst_write_io_mem_handler_with_cpsr, inst_write_mem_handler,
-    inst_write_mem_handler_gxfifo, inst_write_mem_handler_gxfifo_with_cpsr, inst_write_mem_handler_multiple, inst_write_mem_handler_multiple_gxfifo, inst_write_mem_handler_multiple_gxfifo_with_cpsr,
-    inst_write_mem_handler_multiple_with_cpsr, inst_write_mem_handler_with_cpsr,
+    inst_read64_mem_handler, inst_read64_mem_handler_with_cpsr, inst_read_io_mem_handler, inst_read_io_mem_handler_with_cpsr, inst_read_mem_handler, inst_read_mem_handler_multiple,
+    inst_read_mem_handler_multiple_with_cpsr, inst_read_mem_handler_with_cpsr, inst_write_io_mem_handler, inst_write_io_mem_handler_with_cpsr, inst_write_mem_handler, inst_write_mem_handler_gxfifo,
+    inst_write_mem_handler_gxfifo_with_cpsr, inst_write_mem_handler_multiple, inst_write_mem_handler_multiple_gxfifo, inst_write_mem_handler_multiple_gxfifo_with_cpsr,
+    inst_write_mem_handler_multiple_with_cpsr, inst_write_mem_handler_with_cpsr, InstMemMultipleParams,
 };
-use crate::jit::jit_asm::{JitDebugInfo, emit_code_block, hle_bios_uninterrupt};
+use crate::jit::jit_asm::{emit_code_block, hle_bios_uninterrupt, JitDebugInfo};
 use crate::jit::jit_memory_map::JitMemoryMap;
 use crate::jit::op::{MultipleTransfer, Op, SingleTransfer};
 use crate::jit::reg::Reg;
 use crate::jit::{Cond, MemoryAmount};
 use crate::logging::debug_println;
-use crate::mmap::{ArmContext, Mmap, PAGE_SHIFT, PAGE_SIZE, flush_icache, MemRegion};
+use crate::mmap::{flush_icache, ArmContext, MemRegion, Mmap, PAGE_SHIFT, PAGE_SIZE};
 use crate::settings::{Arm7Emu, Settings};
 use crate::utils;
 use crate::utils::{HeapArray, HeapArrayU8};
-use CpuType::{ARM7, ARM9};
 use bilge::prelude::{u4, u6};
 use std::collections::VecDeque;
 use std::hint::{assert_unchecked, unreachable_unchecked};
 use std::intrinsics::unlikely;
 use std::ops::{Deref, DerefMut};
 use std::{mem, ptr, slice};
+use CpuType::{ARM7, ARM9};
 
 pub const JIT_MEMORY_SIZE: usize = 32 * 1024 * 1024;
 pub const JIT_LIVE_RANGE_PAGE_SIZE_SHIFT: u32 = 8;
@@ -211,7 +211,7 @@ impl Emu {
         }
     }
 
-    pub fn jit_set_live_range(&mut self, guest_pc: u32, guest_pc_end: u32, thumb: bool,) {
+    pub fn jit_set_live_range(&mut self, guest_pc: u32, guest_pc_end: u32, thumb: bool) {
         // >> 3 for u8 (each bit represents a page)
         let guest_pc_end = guest_pc_end - if thumb { 2 } else { 4 };
         let live_range_begin = guest_pc >> JIT_LIVE_RANGE_PAGE_SIZE_SHIFT;
@@ -976,8 +976,12 @@ impl JitMemory {
         flush_icache(fast_mem.as_ptr(), fast_mem.len());
     }
 
+    pub fn is_in_jit_mem(&self, addr: usize) -> bool {
+        addr >= self.mem.as_ptr() as usize && addr < self.mem.as_ptr() as usize + JIT_MEMORY_SIZE
+    }
+
     pub unsafe fn patch_slow_mem(&mut self, host_pc: &mut usize, guest_memory_addr: u32, cpu: CpuType, _: &ArmContext) -> bool {
-        if *host_pc < self.mem.as_ptr() as usize || *host_pc >= self.mem.as_ptr() as usize + JIT_MEMORY_SIZE {
+        if !self.is_in_jit_mem(*host_pc) {
             eprintln!("Segfault outside of guest context");
             return false;
         }

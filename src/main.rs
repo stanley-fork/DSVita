@@ -201,10 +201,7 @@ fn run_cpu(emu: &mut Emu) {
 pub static mut CURRENT_RUNNING_CPU: CpuType = ARM9;
 
 pub unsafe fn get_jit_asm_ptr<'a, const CPU: CpuType>() -> *mut JitAsm<'a> {
-    match CPU {
-        ARM9 => CPU.jit_asm_addr() as *mut JitAsm<'a>,
-        ARM7 => CPU.jit_asm_addr() as *mut JitAsm<'a>,
-    }
+    CPU.jit_asm_addr() as *mut JitAsm<'a>
 }
 
 unsafe fn process_fault<const CPU: CpuType>(mem_addr: usize, host_pc: &mut usize, arm_context: &ArmContext) -> bool {
@@ -212,7 +209,7 @@ unsafe fn process_fault<const CPU: CpuType>(mem_addr: usize, host_pc: &mut usize
 
     debug_println!("{CPU:?} fault at {host_pc:x} {mem_addr:x}");
     if mem_addr < CPU.mmu_tcm_addr() {
-        eprintln!("{CPU:?} fault {host_pc:x} {mem_addr:x} outside of mapped memory");
+        eprintln!("{CPU:?} fault {host_pc:x} {mem_addr:x} outside of mapped memory, pc in jit mem {}", asm.emu.jit.is_in_jit_mem(*host_pc));
         return false;
     }
 
