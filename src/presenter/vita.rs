@@ -2,6 +2,7 @@ use crate::cartridge_io::{CartridgeIo, CartridgePreview};
 use crate::core::graphics::gpu_renderer::GpuRenderer;
 use crate::core::input::Keycode;
 use crate::global_settings::GlobalSettings;
+use crate::key_bindings::{KeyBinding, DS_KEY_NAMES, NUM_KEYS};
 use crate::logging::info_println;
 use crate::presenter::imgui::root::{
     ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGui_ImplVitaGL_GamepadUsage, ImGui_ImplVitaGL_Init, ImGui_ImplVitaGL_MouseStickUsage, ImGui_ImplVitaGL_NewFrame, ImGui_ImplVitaGL_RenderDrawData,
@@ -72,6 +73,66 @@ const BUTTONS_TO_SAMPLE: SceCtrlButtons = {
     mask
 } | SCE_CTRL_PSBUTTON;
 
+/// `Keycode` for each editor row, parallel to `key_bindings::DS_KEY_NAMES`. A
+/// binding's `buttons` array is indexed by editor-row position (the display
+/// order), NOT by `Keycode` value, so this table maps row -> Keycode.
+const DISPLAY_KEYCODES: [Keycode; NUM_KEYS] = [
+    Keycode::A,
+    Keycode::B,
+    Keycode::X,
+    Keycode::Y,
+    Keycode::Right,
+    Keycode::Left,
+    Keycode::Up,
+    Keycode::Down,
+    Keycode::TriggerR,
+    Keycode::TriggerL,
+    Keycode::Select,
+    Keycode::Start,
+];
+
+/// Default Vita button per editor row (display order, matches `DS_KEY_NAMES`).
+const DEFAULT_KEY_MAPPING: [u32; NUM_KEYS] = {
+    let mut mapping = [0u32; NUM_KEYS];
+    let mut row = 0;
+    while row < NUM_KEYS {
+        let keycode = DISPLAY_KEYCODES[row] as usize;
+        let mut j = 0;
+        while j < KEY_CODE_MAPPING.len() {
+            if KEY_CODE_MAPPING[j].1 as usize == keycode {
+                mapping[row] = KEY_CODE_MAPPING[j].0;
+            }
+            j += 1;
+        }
+        row += 1;
+    }
+    mapping
+};
+
+/// The Vita buttons a DS key can be bound to, shown in the controls editor.
+const BINDABLE_BUTTONS: [(&CStr, u32); NUM_KEYS] = [
+    (c"Circle", SCE_CTRL_CIRCLE),
+    (c"Cross", SCE_CTRL_CROSS),
+    (c"Triangle", SCE_CTRL_TRIANGLE),
+    (c"Square", SCE_CTRL_SQUARE),
+    (c"L", SCE_CTRL_LTRIGGER),
+    (c"R", SCE_CTRL_RTRIGGER),
+    (c"Up", SCE_CTRL_UP),
+    (c"Down", SCE_CTRL_DOWN),
+    (c"Left", SCE_CTRL_LEFT),
+    (c"Right", SCE_CTRL_RIGHT),
+    (c"Start", SCE_CTRL_START),
+    (c"Select", SCE_CTRL_SELECT),
+];
+
+/// A fresh controls profile seeded with the default mapping (for the editor).
+pub fn default_key_binding() -> KeyBinding {
+    KeyBinding {
+        name: String::new(),
+        buttons: DEFAULT_KEY_MAPPING,
+    }
+}
+
 #[derive(Clone)]
 pub struct PresenterAudioOut {
     audio_port: c_int,
@@ -129,6 +190,7 @@ pub struct Presenter {
     presenter_audio_in: PresenterAudioIn,
     touch_points: Option<(i16, i16)>,
     keymap: u32,
+    key_mapping: [u32; NUM_KEYS],
     pressed_btn: u32,
     do_nothing_until_all_btns_released: bool,
 }
@@ -194,6 +256,7 @@ impl Presenter {
                 presenter_audio_in: PresenterAudioIn::new(),
                 touch_points: None,
                 keymap: 0xFFFFFFFF,
+                key_mapping: DEFAULT_KEY_MAPPING,
                 pressed_btn: 0,
                 do_nothing_until_all_btns_released: false,
             };
@@ -201,6 +264,14 @@ impl Presenter {
             init_ui(&mut instance);
             Some(instance)
         }
+    }
+
+    pub fn get_default_key_mapping() -> [u32; NUM_KEYS] {
+        DEFAULT_KEY_MAPPING
+    }
+
+    pub fn set_key_mapping(&mut self, mapping: [u32; NUM_KEYS]) {
+        self.key_mapping = mapping;
     }
 
     pub fn poll_event(&mut self, settings: &Settings) -> PresentEvent {
@@ -285,11 +356,12 @@ impl Presenter {
                 return PresentEvent::Pause;
             }
 
-            for (host_key, guest_key) in KEY_CODE_MAPPING {
-                if pressed.buttons & host_key != 0 {
-                    self.keymap &= !(1 << guest_key as u8);
+            for (row, &host_key) in self.key_mapping.iter().enumerate() {
+                let guest_key = DISPLAY_KEYCODES[row] as usize;
+                if host_key != 0 && pressed.buttons & host_key != 0 {
+                    self.keymap &= !(1 << guest_key);
                 } else {
-                    self.keymap |= 1 << guest_key as u8;
+                    self.keymap |= 1 << guest_key;
                 }
             }
 
@@ -327,7 +399,7 @@ impl Presenter {
         }
     }
 
-    pub fn present_ui(&mut self, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+    pub fn present_ui(&mut self, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext, default_key_binding: KeyBinding) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
         unsafe {
             sceShellUtilUnlock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN | SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN_2);
 
@@ -346,10 +418,11 @@ impl Presenter {
                                 let settings_file = cartridge_path.join("settings").join(format!("{name}.ini"));
                                 let preview = CartridgePreview::new(path).unwrap();
 
-                                let global_settings = GlobalSettings::new(cartridge_path.join("global_settings")).unwrap();
+                                let global_settings = GlobalSettings::new(cartridge_path.join("global_settings"), default_key_binding).unwrap();
                                 let mut settings = SettingsConfig::new(settings_file).settings;
                                 screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
                                 settings.populate_screen_layouts(screen_layouts);
+                                settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
 
                                 return Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, settings));
                             }
@@ -358,11 +431,12 @@ impl Presenter {
                 }
             }
 
-            match show_main_menu(PathBuf::from(ROM_PATH), screen_layouts, ra_context, self) {
+            match show_main_menu(PathBuf::from(ROM_PATH), screen_layouts, ra_context, default_key_binding, self) {
                 None => None,
                 Some((cartridge_io, global_settings, mut settings)) => {
                     screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
                     settings.populate_screen_layouts(screen_layouts);
+                    settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
                     Some((cartridge_io, global_settings, settings))
                 }
             }
@@ -603,6 +677,80 @@ pub fn show_layout_create_settings(global_settings: &mut GlobalSettings, custom_
             if custom_layout.name.is_empty() {
                 custom_layout_context.empty_name = true;
             } else if global_settings.add_custom_layout(custom_layout.clone()) {
+                return true;
+            } else {
+                custom_layout_context.duplicated_name = true;
+            }
+        }
+        false
+    }
+}
+
+pub fn show_controls_create_settings(global_settings: &mut GlobalSettings, custom_layout_context: &mut CustomLayoutContext, binding: &mut KeyBinding) -> bool {
+    unsafe {
+        let has_error = custom_layout_context.empty_name || custom_layout_context.duplicated_name;
+        let mut footer = ImGui::GetFrameHeightWithSpacing();
+        if has_error {
+            footer += ImGui::GetTextLineHeightWithSpacing();
+        }
+        let body_height = (ImGui::GetContentRegionAvail().y - footer).max(0.0);
+
+        let fields_sz = ImVec2 { x: 0.0, y: body_height };
+        ImGui::BeginChild(c"##controls_fields".as_ptr(), &fields_sz, false, 0);
+
+        if layout_field_button("Profile name", &binding.name_c_str()) {
+            binding.name = dialog_input("Profile name", &binding.name, SCE_IME_TYPE_BASIC_LATIN, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 32);
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        for i in 0..NUM_KEYS {
+            ImGui::PushID3(i as _);
+            let key_label = CString::from_str(DS_KEY_NAMES[i]).unwrap();
+            ImGui::Text(key_label.as_ptr());
+            ImGui::SameLine(0f32, -1f32);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 200f32);
+            ImGui::PushItemWidth(200f32);
+
+            let current = BINDABLE_BUTTONS.iter().position(|(_, bit)| *bit == binding.buttons[i]);
+            let preview = current.map(|c| BINDABLE_BUTTONS[c].0).unwrap_or(c"None");
+            if ImGui::BeginCombo(c"##btn".as_ptr(), preview.as_ptr(), 0) {
+                let sz = ImVec2 { x: 0f32, y: 0f32 };
+                if ImGui::Selectable(c"None".as_ptr(), current.is_none(), 0, &sz) {
+                    binding.buttons[i] = 0;
+                }
+                for (j, (name, bit)) in BINDABLE_BUTTONS.iter().enumerate() {
+                    let is_selected = current == Some(j);
+                    if ImGui::Selectable(name.as_ptr(), is_selected, 0, &sz) {
+                        binding.buttons[i] = *bit;
+                    }
+                    if is_selected {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::PopItemWidth();
+            ImGui::PopID();
+        }
+
+        ImGui::EndChild();
+
+        if has_error {
+            ImGui::PushStyleColor(ImGuiCol__ImGuiCol_Text as _, 0xFF0000FF);
+            if custom_layout_context.empty_name {
+                ImGui::Text(c"Profile name can't be empty".as_ptr());
+            } else {
+                ImGui::Text(c"A profile with that name already exists".as_ptr());
+            }
+            ImGui::PopStyleColor(1);
+        }
+
+        let vec = ImVec2 { x: -1.0, y: 0.0 };
+        if ImGui::Button(c"Save profile".as_ptr(), &vec) {
+            if binding.name.is_empty() {
+                custom_layout_context.empty_name = true;
+            } else if global_settings.add_custom_controls(binding.clone()) {
                 return true;
             } else {
                 custom_layout_context.duplicated_name = true;

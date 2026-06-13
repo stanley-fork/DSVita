@@ -1,15 +1,15 @@
 use crate::cartridge_io::{CartridgeIo, CartridgePreview};
 use crate::core::graphics::gpu_renderer::GpuRenderer;
 use crate::global_settings::GlobalSettings;
+use crate::key_bindings::KeyBinding;
 use crate::presenter::imgui::root::{
     ImDrawData, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF, ImFontAtlas_GetGlyphRangesDefault,
-    ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCond__ImGuiSetCond_Always,
-    ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha,
-    ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar,
-    ImVec2, ImVec4,
+    ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCond__ImGuiSetCond_Always, ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled,
+    ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha, ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar, ImVec2, ImVec4,
 };
-use crate::presenter::{show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
+use crate::presenter::{default_key_binding, show_controls_create_settings, show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
 use crate::settings::{SettingValue, Settings, SettingsConfig, SETTING_GROUPS};
@@ -127,7 +127,10 @@ unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab:
         text_h + (*ImGui::GetStyle()).ItemSpacing.y * 3.0
     };
 
-    let child_sz = ImVec2 { x: 0f32, y: -(footer_height + button_reserve) };
+    let child_sz = ImVec2 {
+        x: 0f32,
+        y: -(footer_height + button_reserve),
+    };
     let mut new_desc = "";
     if ImGui::BeginChild(c"##settings_scroll".as_ptr() as _, &child_sz, false, 0) {
         new_desc = render_tab_settings(settings_config, *active_tab, only_runtime);
@@ -241,18 +244,36 @@ pub(crate) unsafe fn draw_layout_preview(custom_layout: &crate::screen_layouts::
     for i in 0..2 {
         let corners = custom_layout.screen_corners(i);
         let p: [ImVec2; 4] = [
-            ImVec2 { x: ox + corners[0].0 * scale, y: oy + corners[0].1 * scale },
-            ImVec2 { x: ox + corners[1].0 * scale, y: oy + corners[1].1 * scale },
-            ImVec2 { x: ox + corners[2].0 * scale, y: oy + corners[2].1 * scale },
-            ImVec2 { x: ox + corners[3].0 * scale, y: oy + corners[3].1 * scale },
+            ImVec2 {
+                x: ox + corners[0].0 * scale,
+                y: oy + corners[0].1 * scale,
+            },
+            ImVec2 {
+                x: ox + corners[1].0 * scale,
+                y: oy + corners[1].1 * scale,
+            },
+            ImVec2 {
+                x: ox + corners[2].0 * scale,
+                y: oy + corners[2].1 * scale,
+            },
+            ImVec2 {
+                x: ox + corners[3].0 * scale,
+                y: oy + corners[3].1 * scale,
+            },
         ];
         ImDrawList_AddQuadFilled(dl, &p[0], &p[1], &p[2], &p[3], FILL[i]);
         ImDrawList_AddQuad(dl, &p[0], &p[1], &p[2], &p[3], OUTLINE[i], 1.5);
 
-        let center = ImVec2 { x: (p[0].x + p[1].x + p[2].x + p[3].x) * 0.25, y: (p[0].y + p[1].y + p[2].y + p[3].y) * 0.25 };
+        let center = ImVec2 {
+            x: (p[0].x + p[1].x + p[2].x + p[3].x) * 0.25,
+            y: (p[0].y + p[1].y + p[2].y + p[3].y) * 0.25,
+        };
         let label = LABELS[i];
         let ts = ImGui::CalcTextSize(label.as_ptr(), ptr::null(), false, 0.0);
-        let text_pos = ImVec2 { x: center.x - ts.x * 0.5, y: center.y - ts.y * 0.5 };
+        let text_pos = ImVec2 {
+            x: center.x - ts.x * 0.5,
+            y: center.y - ts.y * 0.5,
+        };
         ImDrawList_AddText(dl, &text_pos, 0xFFFFFFFF, label.as_ptr(), ptr::null());
     }
 
@@ -379,7 +400,7 @@ unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, tab: usize, 
 
 // ── Sub-overlay rendering ──
 
-unsafe fn render_global_settings_overlay(show: &mut bool, layout_settings: &mut bool, ra_settings: &mut bool, overlay_focused: &mut bool) {
+unsafe fn render_global_settings_overlay(show: &mut bool, layout_settings: &mut bool, controls_settings: &mut bool, ra_settings: &mut bool, overlay_focused: &mut bool) {
     if !*show {
         *overlay_focused = true;
         return;
@@ -393,6 +414,9 @@ unsafe fn render_global_settings_overlay(show: &mut bool, layout_settings: &mut 
     const BUTTON_WIDTH: f32 = 380.0;
     if menu_button(c"Custom screen layout", BUTTON_WIDTH) {
         *layout_settings = true;
+    }
+    if menu_button(c"Custom controls", BUTTON_WIDTH) {
+        *controls_settings = true;
     }
     if menu_button(c"RetroAchievements", BUTTON_WIDTH) {
         *ra_settings = true;
@@ -515,13 +539,107 @@ unsafe fn render_custom_layout_overlay(
     ImGui::End();
 }
 
-unsafe fn render_ra_settings_overlay(
+unsafe fn render_controls_settings_overlay(
     show: &mut bool,
     global_settings: &mut GlobalSettings,
-    ra_context: &mut RaContext,
-    ra_login_context: &mut RALoginContext,
+    custom_controls: &mut bool,
+    custom_layout_context: &mut CustomLayoutContext,
+    new_key_binding: &mut KeyBinding,
+    selected_custom_control: &mut Option<usize>,
     overlay_focused: &mut bool,
 ) {
+    if !*show {
+        *overlay_focused = true;
+        return;
+    }
+    if !begin_fullscreen_overlay(c"##controlssettings") {
+        ImGui::End();
+        return;
+    }
+    dialog_title(c"Custom Controls");
+
+    center_next_window();
+    if ImGui::BeginPopupModal(
+        c"customcontrolsmenu".as_ptr(),
+        ptr::null_mut(),
+        (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
+            | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
+    ) {
+        let bsz = ImVec2 { x: 120.0, y: 44.0 };
+        if ImGui::Button(c"Delete".as_ptr(), &bsz) {
+            global_settings.delete_custom_controls(selected_custom_control.unwrap());
+            *selected_custom_control = None;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(0.0, (*ImGui::GetStyle()).ItemSpacing.x);
+        if ImGui::Button(c"Back".as_ptr(), &bsz) {
+            *selected_custom_control = None;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if selected_custom_control.is_some() {
+        ImGui::OpenPopup(c"customcontrolsmenu".as_ptr());
+    }
+
+    const BUTTON_WIDTH: f32 = 380.0;
+    if global_settings.custom_controls.is_empty() {
+        centered_text(c"No custom controls yet.");
+        ImGui::Spacing();
+    }
+    for (i, binding) in global_settings.custom_controls.iter().enumerate() {
+        let name = binding.name_c_str();
+        if menu_button(&name, BUTTON_WIDTH) {
+            *selected_custom_control = Some(i);
+        }
+    }
+
+    if menu_button(c"Add custom controls", BUTTON_WIDTH) {
+        *custom_controls = true;
+        *custom_layout_context = CustomLayoutContext::default();
+        *new_key_binding = default_key_binding();
+    }
+
+    back_hint();
+
+    if back_closes_overlay(*overlay_focused) {
+        *show = false;
+    }
+    *overlay_focused = ImGui::IsWindowFocused(0);
+    ImGui::End();
+}
+
+unsafe fn render_custom_controls_overlay(
+    show: &mut bool,
+    global_settings: &mut GlobalSettings,
+    custom_layout_context: &mut CustomLayoutContext,
+    new_key_binding: &mut KeyBinding,
+    overlay_focused: &mut bool,
+) {
+    if !*show {
+        *overlay_focused = true;
+        return;
+    }
+    if !begin_fullscreen_overlay(c"##createcustomcontrols") {
+        ImGui::End();
+        return;
+    }
+    dialog_title(c"New Controls Profile");
+    if show_controls_create_settings(global_settings, custom_layout_context, new_key_binding) {
+        *show = false;
+    }
+    if back_closes_overlay(*overlay_focused) {
+        *show = false;
+    }
+    *overlay_focused = ImGui::IsWindowFocused(0);
+    ImGui::End();
+}
+
+unsafe fn render_ra_settings_overlay(show: &mut bool, global_settings: &mut GlobalSettings, ra_context: &mut RaContext, ra_login_context: &mut RALoginContext, overlay_focused: &mut bool) {
     if !*show {
         *overlay_focused = true;
         return;
@@ -575,7 +693,13 @@ pub struct RALoginContext {
 
 // ── Main menu ──
 
-pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext, ui_backend: &mut impl UiBackend) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+pub fn show_main_menu(
+    cartridge_path: PathBuf,
+    screen_layouts: &mut ScreenLayouts,
+    ra_context: &mut RaContext,
+    default_keybinding: KeyBinding,
+    ui_backend: &mut impl UiBackend,
+) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
     unsafe {
         let saves_path = cartridge_path.join("saves");
         let global_settings_path = cartridge_path.join("global_settings");
@@ -585,7 +709,7 @@ pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayout
         let _ = fs::create_dir_all(&global_settings_path);
         let _ = fs::create_dir_all(&settings_path);
 
-        let mut global_settings = GlobalSettings::new(global_settings_path.clone()).unwrap();
+        let mut global_settings = GlobalSettings::new(global_settings_path.clone(), default_keybinding).unwrap();
         screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
         ra_context.set_cache_dir(cartridge_path.join("ra"));
 
@@ -611,6 +735,13 @@ pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayout
         let mut custom_layout_context = CustomLayoutContext::default();
         let mut new_custom_layout = CustomLayout::default();
         let mut selected_custom_layout: Option<usize> = None;
+
+        let mut controls_settings = false;
+        let mut controls_settings_focused = true;
+        let mut custom_controls_show = false;
+        let mut custom_controls_focused = true;
+        let mut new_key_binding = KeyBinding::default();
+        let mut selected_custom_control: Option<usize> = None;
 
         let mut ra_settings = false;
         let mut ra_settings_focused = true;
@@ -648,6 +779,7 @@ pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayout
                 &cartridges,
                 &mut settings_configs,
                 screen_layouts,
+                &global_settings,
                 icon_tex,
                 &mut detail_game,
                 &mut active_tab,
@@ -657,7 +789,7 @@ pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayout
             );
 
             // Sub-overlays
-            render_global_settings_overlay(&mut show_global_settings, &mut layout_settings, &mut ra_settings, &mut global_settings_focused);
+            render_global_settings_overlay(&mut show_global_settings, &mut layout_settings, &mut controls_settings, &mut ra_settings, &mut global_settings_focused);
             render_layout_settings_overlay(
                 &mut layout_settings,
                 &mut global_settings,
@@ -675,6 +807,22 @@ pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayout
                 &mut custom_layout_context,
                 &mut new_custom_layout,
                 &mut custom_layout_focused,
+            );
+            render_controls_settings_overlay(
+                &mut controls_settings,
+                &mut global_settings,
+                &mut custom_controls_show,
+                &mut custom_layout_context,
+                &mut new_key_binding,
+                &mut selected_custom_control,
+                &mut controls_settings_focused,
+            );
+            render_custom_controls_overlay(
+                &mut custom_controls_show,
+                &mut global_settings,
+                &mut custom_layout_context,
+                &mut new_key_binding,
+                &mut custom_controls_focused,
             );
             render_ra_settings_overlay(&mut ra_settings, &mut global_settings, ra_context, &mut ra_login_context, &mut ra_settings_focused);
 
@@ -803,6 +951,7 @@ unsafe fn render_game_detail_overlay(
     cartridges: &[CartridgePreview],
     settings_configs: &mut [SettingsConfig],
     screen_layouts: &ScreenLayouts,
+    global_settings: &GlobalSettings,
     icon_tex: u32,
     detail_game: &mut Option<usize>,
     active_tab: &mut usize,
@@ -843,6 +992,7 @@ unsafe fn render_game_detail_overlay(
 
     ImGui::Spacing();
     settings_configs[i].settings.populate_screen_layouts(screen_layouts);
+    settings_configs[i].settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
     // Reserve a row for the Save button below the settings + description footer.
     render_settings_tabs(&mut settings_configs[i], active_tab, false, ImGui::GetFrameHeightWithSpacing(), active_desc);
 
@@ -886,6 +1036,7 @@ unsafe fn render_game_preview(cartridge: &CartridgePreview, icon_tex: u32) {
 
 // ── Pause menu ──
 
+#[derive(Eq, PartialEq)]
 pub enum UiPauseMenuReturn {
     Resume,
     BlowMic,

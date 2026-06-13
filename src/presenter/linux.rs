@@ -2,6 +2,7 @@ use crate::cartridge_io::{CartridgeIo, CartridgePreview};
 use crate::core::graphics::gpu_renderer::GpuRenderer;
 use crate::core::input;
 use crate::global_settings::GlobalSettings;
+use crate::key_bindings::KeyBinding;
 use crate::logging::debug_panic;
 use crate::presenter::imgui::root::{
     ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGuiConfigFlags__ImGuiConfigFlags_NavEnableKeyboard, ImGuiInputTextFlags__ImGuiInputTextFlags_Password, ImGui_ImplSdlGL3_Init,
@@ -163,7 +164,7 @@ impl Presenter {
         Some(instance)
     }
 
-    pub fn present_ui(&mut self, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+    pub fn present_ui(&mut self, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext, default_keybinding: KeyBinding) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
         let file_path = PathBuf::from(self.arg_matches.get_one::<String>("nds_rom").unwrap());
         if self.arg_matches.get_flag("ui") {
             if file_path.exists() && file_path.is_file() {
@@ -171,11 +172,12 @@ impl Presenter {
                 std::process::exit(1);
             }
 
-            match show_main_menu(file_path, screen_layouts, ra_context, self) {
+            match show_main_menu(file_path, screen_layouts, ra_context, default_keybinding, self) {
                 None => None,
                 Some((cartridge_io, global_settings, mut settings)) => {
                     screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
                     settings.populate_screen_layouts(screen_layouts);
+                    settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
                     Some((cartridge_io, global_settings, settings))
                 }
             }
@@ -191,9 +193,10 @@ impl Presenter {
 
             ra_context.set_cache_dir(file_path.parent().unwrap().join("ra"));
 
-            let global_settings = GlobalSettings::new(file_path.parent().unwrap().join("global_settings")).unwrap();
+            let global_settings = GlobalSettings::new(file_path.parent().unwrap().join("global_settings"), default_keybinding).unwrap();
             screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
             settings.populate_screen_layouts(screen_layouts);
+            settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
             Some((CartridgeIo::from_preview(preview, save_path).unwrap(), global_settings, settings))
         }
     }
@@ -209,6 +212,12 @@ impl Presenter {
     pub fn present_progress(&mut self, current_name: impl AsRef<str>, progress: usize, total: usize) {
         show_progress(self, current_name, progress, total)
     }
+
+    pub fn get_default_key_mapping() -> [u32; crate::key_bindings::NUM_KEYS] {
+        [0; crate::key_bindings::NUM_KEYS]
+    }
+
+    pub fn set_key_mapping(&mut self, _: [u32; crate::key_bindings::NUM_KEYS]) {}
 
     pub fn poll_event(&mut self, _: &Settings) -> PresentEvent {
         for event in self.event_pump.poll_iter() {
@@ -402,6 +411,17 @@ pub fn show_layout_create_settings(global_settings: &mut GlobalSettings, custom_
         }
         false
     }
+}
+
+pub fn default_key_binding() -> crate::key_bindings::KeyBinding {
+    crate::key_bindings::KeyBinding::default()
+}
+
+pub fn show_controls_create_settings(_: &mut GlobalSettings, _: &mut CustomLayoutContext, _: &mut crate::key_bindings::KeyBinding) -> bool {
+    unsafe {
+        ImGui::Text(c"Custom controls are only available on the Vita.".as_ptr());
+    }
+    false
 }
 
 pub fn show_retroachievements_settings(global_settings: &mut GlobalSettings, login_context: &mut RALoginContext, context: &mut RaContext) {

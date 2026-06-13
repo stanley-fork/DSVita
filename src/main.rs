@@ -27,6 +27,7 @@ use crate::core::thread_regs::ThreadRegs;
 use crate::core::{spi, CpuType};
 use crate::jit::jit_asm::{JitAsm, MAX_STACK_DEPTH_SIZE};
 use crate::jit::jit_memory::JitMemory;
+use crate::key_bindings::KeyBinding;
 use crate::logging::{debug_println, info_println};
 use crate::mmap::{register_abort_handler, ArmContext, Mmap, PAGE_SIZE};
 use crate::presenter::ui::UiPauseMenuReturn;
@@ -55,6 +56,7 @@ mod fast_fixed_fifo;
 mod fixed_fifo;
 mod global_settings;
 mod jit;
+mod key_bindings;
 mod logging;
 mod math;
 mod mmap;
@@ -429,10 +431,11 @@ pub fn actual_main() {
 
     let mut running = true;
     while running {
-        let (mut cartridge_io, global_settings, mut settings) = match presenter.present_ui(&mut screen_layouts, &mut ra_context) {
-            Some((cartridge_io, global_settings, settings)) => (cartridge_io, global_settings, settings),
-            None => return,
-        };
+        let (mut cartridge_io, global_settings, mut settings) =
+            match presenter.present_ui(&mut screen_layouts, &mut ra_context, KeyBinding::new("Default".to_string(), Presenter::get_default_key_mapping())) {
+                Some((cartridge_io, global_settings, settings)) => (cartridge_io, global_settings, settings),
+                None => return,
+            };
 
         if settings.retroachievements() {
             if ra_context.get_user_info().is_none() {
@@ -443,6 +446,8 @@ pub fn actual_main() {
                 }
             }
         }
+
+        presenter.set_key_mapping(global_settings.get_control(settings.controls_index()).buttons);
 
         info_println!("{} Settings: {settings:?}", cartridge_io.file_name);
 
@@ -631,15 +636,6 @@ pub fn actual_main() {
                 }
                 emu_unsafe.get_mut().settings.set_screen_layout(&screen_layout);
                 match presenter.present_pause(gpu_renderer, &mut emu_unsafe.get_mut().settings) {
-                    UiPauseMenuReturn::Resume => {
-                        screen_layout = emu_unsafe.get_mut().settings.screen_layout(&screen_layouts);
-                        gpu_renderer.unpause(cpu_thread.thread());
-                    }
-                    UiPauseMenuReturn::BlowMic => {
-                        emu_unsafe.get_mut().spi.start_blow_mic();
-                        screen_layout = emu_unsafe.get_mut().settings.screen_layout(&screen_layouts);
-                        gpu_renderer.unpause(cpu_thread.thread());
-                    }
                     UiPauseMenuReturn::Quit => {
                         gpu_renderer.set_quit(true);
                         gpu_renderer.unpause(cpu_thread.thread());
@@ -650,6 +646,14 @@ pub fn actual_main() {
                         gpu_renderer.set_quit(true);
                         gpu_renderer.unpause(cpu_thread.thread());
                         break;
+                    }
+                    ret => {
+                        if ret == UiPauseMenuReturn::BlowMic {
+                            emu_unsafe.get_mut().spi.start_blow_mic();
+                        }
+                        presenter.set_key_mapping(global_settings.get_control(settings.controls_index()).buttons);
+                        screen_layout = emu_unsafe.get_mut().settings.screen_layout(&screen_layouts);
+                        gpu_renderer.unpause(cpu_thread.thread());
                     }
                 }
             } else {

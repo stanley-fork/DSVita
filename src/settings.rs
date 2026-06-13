@@ -1,4 +1,5 @@
 use crate::core::graphics::gpu_3d::renderer_3d::{Gpu3DRenderer, WidescreenOption};
+use crate::key_bindings::KeyBinding;
 use crate::screen_layouts::{ScreenLayout, ScreenLayouts};
 use ini::Ini;
 use lazy_static::lazy_static;
@@ -220,12 +221,13 @@ lazy_static! {
             Setting::new("Show debug statistics", "Show FPS and other debug information while playing.", SettingValue::Bool(true), true),
             Setting::new("Retroachievements", "Enables RetroAchievements. Log in first via Global settings.", SettingValue::Bool(true), false),
             Setting::new("Tap corner to swap screens", "Tap the bottom-right corner of the screen to swap the large and small screens (same as PS + Cross).", SettingValue::Bool(false), true),
+            Setting::new("Controls", "Custom button mapping to use. Create profiles under Global settings.", SettingValue::List(ListInner::new(0, vec![])), true),
         ],
     );
 }
 
 #[derive(Clone)]
-pub struct Settings([Setting; 17]);
+pub struct Settings([Setting; 18]);
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
@@ -247,6 +249,7 @@ pub(crate) enum SettingIndices {
     ShowDebugStatistics,
     Retroachievements,
     TapCornerToSwap,
+    Controls,
 }
 
 pub(crate) const SETTING_GROUPS: &[(&str, &[SettingIndices])] = &[
@@ -272,6 +275,7 @@ pub(crate) const SETTING_GROUPS: &[(&str, &[SettingIndices])] = &[
         &[
             SettingIndices::Language,
             SettingIndices::JoystickAsDpad,
+            SettingIndices::Controls,
             SettingIndices::ShowDebugStatistics,
             SettingIndices::Retroachievements,
         ],
@@ -312,6 +316,26 @@ impl Settings {
 
     pub fn tap_corner_to_swap(&self) -> bool {
         unsafe { self.0[SettingIndices::TapCornerToSwap as usize].value.as_bool().unwrap_unchecked() }
+    }
+
+    pub fn controls_index(&self) -> usize {
+        unsafe { self.0[SettingIndices::Controls as usize].value.as_list().unwrap_unchecked().0 }
+    }
+
+    pub fn populate_controls(&mut self, default_binding: &KeyBinding, bindings: &[KeyBinding]) {
+        let (_, values) = unsafe { self.0[SettingIndices::Controls as usize].value.as_list_mut().unwrap_unchecked() };
+        let first_population = values.is_empty();
+        values.clear();
+        values.push(default_binding.name.clone());
+        for binding in bindings {
+            values.push(binding.name.clone());
+        }
+        if first_population {
+            match &mut self.0[SettingIndices::Controls as usize].value {
+                SettingValue::List(inner) => inner.reset_to_initial_selection(),
+                _ => unsafe { unreachable_unchecked() },
+            }
+        }
     }
 
     pub fn framelimit(&self) -> u8 {
