@@ -30,7 +30,7 @@ use crate::jit::jit_memory::JitMemory;
 use crate::logging::{debug_println, info_println};
 use crate::mmap::{register_abort_handler, ArmContext, Mmap, PAGE_SIZE};
 use crate::presenter::ui::UiPauseMenuReturn;
-use crate::presenter::{PresentEvent, Presenter, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE};
+use crate::presenter::{PresentEvent, Presenter, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::ScreenLayouts;
 use crate::settings::Arm7Emu;
@@ -577,16 +577,28 @@ pub fn actual_main() {
 
         let gpu_renderer = gpu_renderer.as_mut().unwrap();
         let mut screen_layout = emu_unsafe.get_mut().settings.screen_layout(&screen_layouts);
+        // Bottom-right hot-corner for the "tap corner to swap screens" gesture.
+        const SWAP_ZONE_WIDTH: i16 = 70;
+        const SWAP_ZONE_HEIGHT: i16 = 70;
+        let mut prev_touch: Option<(i16, i16)> = None;
         loop {
             let pause = match presenter.poll_event(&emu_unsafe.get_mut().settings) {
                 PresentEvent::Inputs { mut keymap, touch } => {
                     if let Some((x, y)) = touch {
                         let (x_norm, y_norm) = screen_layout.normalize_touch_points(x, y);
-                        if x_norm >= 0 && x_norm < DISPLAY_WIDTH as i16 && y_norm >= 0 && y_norm < DISPLAY_HEIGHT as i16 {
+                        if prev_touch.is_none()
+                            && x >= PRESENTER_SCREEN_WIDTH as i16 - SWAP_ZONE_WIDTH
+                            && y >= PRESENTER_SCREEN_HEIGHT as i16 - SWAP_ZONE_HEIGHT
+                            && unsafe { emu_unsafe.get().as_ref_unchecked().settings.tap_corner_to_swap() }
+                        {
+                            // Fresh tap in the corner that didn't hit the touch screen: swap screens.
+                            screen_layout = screen_layout.apply_settings_event(&screen_layouts, 0, true, 0, 0);
+                        } else if x_norm >= 0 && x_norm < DISPLAY_WIDTH as i16 && y_norm >= 0 && y_norm < DISPLAY_HEIGHT as i16 {
                             touch_points.store(((y_norm as u16) << 8) | (x_norm as u16), Ordering::Relaxed);
                             keymap &= !(1 << 16);
                         }
                     }
+                    prev_touch = touch;
                     key_map.store(keymap, Ordering::Relaxed);
                     false
                 }

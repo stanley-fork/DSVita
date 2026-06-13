@@ -219,12 +219,13 @@ lazy_static! {
             Setting::new("Joystick as D-Pad", "Use the left analog stick as the D-Pad.", SettingValue::Bool(true), true),
             Setting::new("Show debug statistics", "Show FPS and other debug information while playing.", SettingValue::Bool(true), true),
             Setting::new("Retroachievements", "Enables RetroAchievements. Log in first via Global settings.", SettingValue::Bool(true), false),
+            Setting::new("Tap corner to swap screens", "Tap the bottom-right corner of the screen to swap the large and small screens (same as PS + Cross).", SettingValue::Bool(false), true),
         ],
     );
 }
 
 #[derive(Clone)]
-pub struct Settings([Setting; 16]);
+pub struct Settings([Setting; 17]);
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
@@ -245,33 +246,36 @@ pub(crate) enum SettingIndices {
     JoystickAsDpad,
     ShowDebugStatistics,
     Retroachievements,
+    TapCornerToSwap,
 }
 
 pub(crate) const SETTING_GROUPS: &[(&str, &[SettingIndices])] = &[
-    ("Emulation", &[
-        SettingIndices::Framelimit,
-        SettingIndices::Geometry3DSkip,
-        SettingIndices::Arm7Emu,
-        SettingIndices::HleOsIrqHandler,
-    ]),
-    ("Screen", &[
-        SettingIndices::ScreenLayout,
-        SettingIndices::TopScreenScale,
-        SettingIndices::BottomScreenScale,
-        SettingIndices::SwapScreen,
-        SettingIndices::Upscale3DFactor,
-        SettingIndices::Widescreen,
-    ]),
-    ("Audio", &[
-        SettingIndices::Audio,
-        SettingIndices::AudioStretching,
-    ]),
-    ("System", &[
-        SettingIndices::Language,
-        SettingIndices::JoystickAsDpad,
-        SettingIndices::ShowDebugStatistics,
-        SettingIndices::Retroachievements,
-    ]),
+    (
+        "Emulation",
+        &[SettingIndices::Framelimit, SettingIndices::Geometry3DSkip, SettingIndices::Arm7Emu, SettingIndices::HleOsIrqHandler],
+    ),
+    (
+        "Screen",
+        &[
+            SettingIndices::ScreenLayout,
+            SettingIndices::TopScreenScale,
+            SettingIndices::BottomScreenScale,
+            SettingIndices::SwapScreen,
+            SettingIndices::Upscale3DFactor,
+            SettingIndices::Widescreen,
+            SettingIndices::TapCornerToSwap,
+        ],
+    ),
+    ("Audio", &[SettingIndices::Audio, SettingIndices::AudioStretching]),
+    (
+        "System",
+        &[
+            SettingIndices::Language,
+            SettingIndices::JoystickAsDpad,
+            SettingIndices::ShowDebugStatistics,
+            SettingIndices::Retroachievements,
+        ],
+    ),
 ];
 
 impl Settings {
@@ -304,6 +308,10 @@ impl Settings {
 
     pub fn joystick_as_dpad(&self) -> bool {
         unsafe { self.0[SettingIndices::JoystickAsDpad as usize].value.as_bool().unwrap_unchecked() }
+    }
+
+    pub fn tap_corner_to_swap(&self) -> bool {
+        unsafe { self.0[SettingIndices::TapCornerToSwap as usize].value.as_bool().unwrap_unchecked() }
     }
 
     pub fn framelimit(&self) -> u8 {
