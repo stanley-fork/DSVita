@@ -188,30 +188,37 @@ impl Setting {
 lazy_static! {
     pub static ref DEFAULT_SETTINGS: Settings = Settings(
         [
-            Setting::new("Framelimit", "", framelimit_value(), true),
-            Setting::new("Audio", "Disabling audio can give a performance boost.", SettingValue::Bool(true), true),
+            Setting::new("Framelimit", "Caps the emulation speed relative to real hardware. Set to 'off' to run as fast as possible.", framelimit_value(), true),
+            Setting::new("Audio", "Turn audio off for a small performance boost.", SettingValue::Bool(true), true),
             Setting::new(
                 "Arm7 Emulation",
-                "AccurateLle: Slowest, best compatibility, SoundHle: ~10%% faster, reduced compatibility,\nHle: ~15-20%% faster, worst compatibility. Use AccurateLle if game crashes, gets stuck or bugs occur.",
+                "How the ARM7 co-processor is emulated. AccurateLle is slowest but most compatible. SoundHle is ~10%% faster and Hle ~15-20%% faster, but both reduce compatibility. Use AccurateLle if a game crashes, freezes or misbehaves.",
                 Arm7Emu::iter().into(),
                 false,
             ),
-            Setting::new("HLE OS irq handler", "Use HLE to emulate the irq handler, this gives a performance boost, however might lead to crashes", SettingValue::Bool(true), false),
-            Setting::new("Geometry 3D frameskip",
-                "Don't calculate new frames when old ones in queue haven't been consumed yet. Increases latency and might introduce\nglitches, however gives a performance boost. Disable when playing games that use 3D on both screens or the game has\nvisual glitches.",
+            Setting::new(
+                "HLE OS irq handler",
+                "Emulates the system interrupt handler at a higher level for extra speed. May cause crashes in some games.",
                 SettingValue::Bool(true),
-                true),
-            Setting::new("Upscale 3D factor", "Upscale 3D polygons, will decrease framerate when set too high", Gpu3DRenderer::upscale_factor_settings_value(), true),
-            Setting::new("Audio stretching", "Enable if games doesn't run at fullspeed, introduces latency however prevents audio stutter.", SettingValue::Bool(true), true),
-            Setting::new("Screen Layout", "Press PS + L Trigger or PS + R Trigger to cycle through layouts in game.", SettingValue::List(ListInner::new(0, vec![])), true),
-            Setting::new("Wide 3D screen", "This is experimental and causes glitches, only available when using single, focus overlap or custom layouts", Gpu3DRenderer::widescreen_settings_value(), true),
-            Setting::new("Swap screens", "Press PS + Cross to swap screens in game.", SettingValue::Bool(false), true),
-            Setting::new("Top screen scale", "Press PS + Square to cycle screen sizes.", ScreenLayout::scale_settings_value(), true),
-            Setting::new("Bottom screen scale", "Press PS + Circle to cycle screen sizes", ScreenLayout::scale_settings_value(), true),
-            Setting::new("Language", "Some ROMs only come with one language. Make sure yours is multilingual.", Language::iter().into(), false),
-            Setting::new("Joystick as D-Pad", "", SettingValue::Bool(true), true),
-            Setting::new("Show debug statistics", "", SettingValue::Bool(true), true),
-            Setting::new("Retroachievements", "Make sure you are logged in first", SettingValue::Bool(true), false),
+                false,
+            ),
+            Setting::new(
+                "Geometry 3D frameskip",
+                "Skips redundant 3D frames for better performance at the cost of some latency. Turn off if a game has 3D glitches or renders 3D on both screens.",
+                SettingValue::Bool(true),
+                true,
+            ),
+            Setting::new("Upscale 3D factor", "Renders 3D graphics at a higher internal resolution. Higher values look sharper but run slower.", Gpu3DRenderer::upscale_factor_settings_value(), true),
+            Setting::new("Audio stretching", "Stretches audio to prevent crackling when a game runs below full speed. Adds a little latency.", SettingValue::Bool(true), true),
+            Setting::new("Screen Layout", "How the two screens are arranged on the display. In-game: PS + L or PS + R cycles through layouts.", SettingValue::List(ListInner::new(0, vec![])), true),
+            Setting::new("Wide 3D screen", "Experimental widescreen hack for 3D. Can cause glitches. Only available with the single, focus-overlap or custom layouts.", Gpu3DRenderer::widescreen_settings_value(), true),
+            Setting::new("Swap screens", "Swaps the top and bottom screens. In-game: PS + Cross.", SettingValue::Bool(false), true),
+            Setting::new("Top screen scale", "Size of the top screen. In-game: PS + Square cycles sizes.", ScreenLayout::scale_settings_value(), true),
+            Setting::new("Bottom screen scale", "Size of the bottom screen. In-game: PS + Circle cycles sizes.", ScreenLayout::scale_settings_value(), true),
+            Setting::new("Language", "Preferred in-game language. Only applies if the game actually includes it.", Language::iter().into(), false),
+            Setting::new("Joystick as D-Pad", "Use the left analog stick as the D-Pad.", SettingValue::Bool(true), true),
+            Setting::new("Show debug statistics", "Show FPS and other debug information while playing.", SettingValue::Bool(true), true),
+            Setting::new("Retroachievements", "Enables RetroAchievements. Log in first via Global settings.", SettingValue::Bool(true), false),
         ],
     );
 }
@@ -220,7 +227,8 @@ lazy_static! {
 pub struct Settings([Setting; 16]);
 
 #[repr(u8)]
-enum SettingIndices {
+#[derive(Copy, Clone)]
+pub(crate) enum SettingIndices {
     Framelimit = 0,
     Audio,
     Arm7Emu,
@@ -238,6 +246,33 @@ enum SettingIndices {
     ShowDebugStatistics,
     Retroachievements,
 }
+
+pub(crate) const SETTING_GROUPS: &[(&str, &[SettingIndices])] = &[
+    ("Emulation", &[
+        SettingIndices::Framelimit,
+        SettingIndices::Geometry3DSkip,
+        SettingIndices::Arm7Emu,
+        SettingIndices::HleOsIrqHandler,
+    ]),
+    ("Screen", &[
+        SettingIndices::ScreenLayout,
+        SettingIndices::TopScreenScale,
+        SettingIndices::BottomScreenScale,
+        SettingIndices::SwapScreen,
+        SettingIndices::Upscale3DFactor,
+        SettingIndices::Widescreen,
+    ]),
+    ("Audio", &[
+        SettingIndices::Audio,
+        SettingIndices::AudioStretching,
+    ]),
+    ("System", &[
+        SettingIndices::Language,
+        SettingIndices::JoystickAsDpad,
+        SettingIndices::ShowDebugStatistics,
+        SettingIndices::Retroachievements,
+    ]),
+];
 
 impl Settings {
     pub fn screen_layout(&self, screen_layouts: &ScreenLayouts) -> ScreenLayout {

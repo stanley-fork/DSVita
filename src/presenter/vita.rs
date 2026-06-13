@@ -7,7 +7,7 @@ use crate::presenter::imgui::root::{
     ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGuiStyleVar__ImGuiStyleVar_ItemSpacing, ImGuiStyleVar__ImGuiStyleVar_WindowRounding, ImGui_ImplVitaGL_GamepadUsage, ImGui_ImplVitaGL_Init,
     ImGui_ImplVitaGL_MouseStickUsage, ImGui_ImplVitaGL_NewFrame, ImGui_ImplVitaGL_RenderDrawData, ImGui_ImplVitaGL_TouchUsage, ImVec2,
 };
-use crate::presenter::ui::{init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
+use crate::presenter::ui::{draw_layout_preview, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
 use crate::presenter::{
     PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_IN_SAMPLE_RATE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH,
 };
@@ -442,11 +442,8 @@ impl UiBackend for Presenter {
             ImGui_ImplVitaGL_Init();
 
             info_println!("Set style for ImGui");
-            let vec = ImVec2 { x: 0f32, y: 2f32 };
-            ImGui::PushStyleVar1(ImGuiStyleVar__ImGuiStyleVar_ItemSpacing as _, &vec);
-            ImGui::PushStyleVar(ImGuiStyleVar__ImGuiStyleVar_WindowRounding as _, 0f32);
             (*ImGui::GetIO()).MouseDrawCursor = false;
-            ImGui_ImplVitaGL_TouchUsage(false);
+            ImGui_ImplVitaGL_TouchUsage(true);
             ImGui_ImplVitaGL_GamepadUsage(true);
             ImGui_ImplVitaGL_MouseStickUsage(false);
             ImGui::StyleColorsDark(ptr::null_mut());
@@ -502,123 +499,102 @@ unsafe fn dialog_input(title: &str, value: &str, input_type: u32, text_box_mode:
     String::from_utf16(&input_buf[..len]).unwrap().trim().to_string()
 }
 
+/// One settings row: a fixed-width button showing `value` (tapping it opens the
+/// on-screen keyboard) with `label` to its right — mirrors the Linux InputInt
+/// layout. Returns whether the button was tapped.
+unsafe fn layout_field_button(label: &str, value: &CStr) -> bool {
+    let c_label = CString::from_str(label).unwrap();
+    ImGui::PushID(c_label.as_ptr());
+    let sz = ImVec2 { x: 150.0, y: 0.0 };
+    let clicked = ImGui::Button(value.as_ptr(), &sz);
+    ImGui::SameLine(0f32, -1f32);
+    ImGui::Text(c_label.as_ptr());
+    ImGui::PopID();
+    clicked
+}
+
 pub fn show_layout_create_settings(global_settings: &mut GlobalSettings, custom_layout_context: &mut CustomLayoutContext, custom_layout: &mut CustomLayout) -> bool {
     unsafe {
-        ImGui::Text(c"Layout name".as_ptr() as _);
-        ImGui::SameLine(0f32, -1f32);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 500f32);
-        let vec = ImVec2 { x: 500.0, y: 0.0 };
-        let name = custom_layout.name_c_str();
-        if ImGui::Button(name.as_ptr() as _, &vec) {
+        // Reserve the Save button (plus one error line only when shown) so the
+        // fields/preview span down to the button.
+        let has_error = custom_layout_context.parse_error || custom_layout_context.empty_name || custom_layout_context.duplicated_name;
+        let mut footer = ImGui::GetFrameHeightWithSpacing();
+        if has_error {
+            footer += ImGui::GetTextLineHeightWithSpacing();
+        }
+        let body_height = (ImGui::GetContentRegionAvail().y - footer).max(0.0);
+
+        let fields_sz = ImVec2 { x: 430.0, y: body_height };
+        ImGui::BeginChild(c"##layout_fields".as_ptr(), &fields_sz, false, 0);
+
+        if layout_field_button("Layout name", &custom_layout.name_c_str()) {
             custom_layout.name = dialog_input("Layout name", &custom_layout.name, SCE_IME_TYPE_BASIC_LATIN, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 32);
         }
 
-        for (i, name) in [(0, "Top"), (1, "Bottom")] {
-            let title = format!("{name} width");
-            let c_title = CString::from_str(&title).unwrap();
-            ImGui::PushID(c_title.as_ptr());
-            ImGui::Text(c_title.as_ptr());
-            ImGui::SameLine(0f32, -1f32);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 500f32);
-            let vec = ImVec2 { x: 500.0, y: 0.0 };
-            let c_width = custom_layout.width_c_str(i);
-            if ImGui::Button(c_width.as_ptr() as _, &vec) {
-                custom_layout_context.parse_error = !custom_layout.set_width(i, &dialog_input(&title, &custom_layout.width_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
-            }
-            ImGui::PopID();
+        for (i, screen) in [(0usize, c"Top screen"), (1usize, c"Bottom screen")] {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled(screen.as_ptr());
+            ImGui::PushID3(i as _);
 
-            let title = format!("{name} height");
-            let c_title = CString::from_str(&title).unwrap();
-            ImGui::PushID(c_title.as_ptr());
-            ImGui::Text(c_title.as_ptr() as _);
-            ImGui::SameLine(0f32, -1f32);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 500f32);
-            let vec = ImVec2 { x: 500.0, y: 0.0 };
-            let c_height = custom_layout.height_c_str(i);
-            if ImGui::Button(c_height.as_ptr() as _, &vec) {
-                custom_layout_context.parse_error = !custom_layout.set_height(i, &dialog_input(&title, &custom_layout.height_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
+            if layout_field_button("Width", &custom_layout.width_c_str(i)) {
+                custom_layout_context.parse_error = !custom_layout.set_width(i, &dialog_input("Width", &custom_layout.width_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
             }
-            ImGui::PopID();
+            if layout_field_button("Height", &custom_layout.height_c_str(i)) {
+                custom_layout_context.parse_error = !custom_layout.set_height(i, &dialog_input("Height", &custom_layout.height_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
+            }
+            if layout_field_button("Position X", &custom_layout.pos_x_c_str(i)) {
+                custom_layout_context.parse_error = !custom_layout.set_pos_x(i, &dialog_input("Position X", &custom_layout.pos_x_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
+            }
+            if layout_field_button("Position Y", &custom_layout.pos_y_c_str(i)) {
+                custom_layout_context.parse_error = !custom_layout.set_pos_y(i, &dialog_input("Position Y", &custom_layout.pos_y_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
+            }
+            if layout_field_button("Rotation", &custom_layout.rot_c_str(i)) {
+                custom_layout_context.parse_error = !custom_layout.set_rot(i, &dialog_input("Rotation", &custom_layout.rot_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 3));
+            }
 
-            let title = format!("{name} position x");
-            let c_title = CString::from_str(&title).unwrap();
-            ImGui::PushID(c_title.as_ptr());
-            ImGui::Text(c_title.as_ptr() as _);
-            ImGui::SameLine(0f32, -1f32);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 500f32);
-            let vec = ImVec2 { x: 500.0, y: 0.0 };
-            let c_pos_x = custom_layout.pos_x_c_str(i);
-            if ImGui::Button(c_pos_x.as_ptr() as _, &vec) {
-                custom_layout_context.parse_error = !custom_layout.set_pos_x(i, &dialog_input(&title, &custom_layout.pos_x_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
-            }
-            ImGui::PopID();
-
-            let title = format!("{name} position y");
-            let c_title = CString::from_str(&title).unwrap();
-            ImGui::PushID(c_title.as_ptr());
-            ImGui::Text(c_title.as_ptr() as _);
-            ImGui::SameLine(0f32, -1f32);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 500f32);
-            let vec = ImVec2 { x: 500.0, y: 0.0 };
-            let c_pos_y = custom_layout.pos_y_c_str(i);
-            if ImGui::Button(c_pos_y.as_ptr() as _, &vec) {
-                custom_layout_context.parse_error = !custom_layout.set_pos_y(i, &dialog_input(&title, &custom_layout.pos_y_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 5));
-            }
-            ImGui::PopID();
-
-            let title = format!("{name} rotation in degrees");
-            let c_title = CString::from_str(&title).unwrap();
-            ImGui::PushID(c_title.as_ptr());
-            ImGui::Text(c_title.as_ptr() as _);
-            ImGui::SameLine(0f32, -1f32);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 500f32);
-            let vec = ImVec2 { x: 500.0, y: 0.0 };
-            let c_rot = custom_layout.rot_c_str(i);
-            if ImGui::Button(c_rot.as_ptr() as _, &vec) {
-                custom_layout_context.parse_error = !custom_layout.set_rot(i, &dialog_input(&title, &custom_layout.rot_str(i), SCE_IME_TYPE_NUMBER, SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT, 3));
-            }
             ImGui::PopID();
         }
 
-        let title = "Widescreen coefficient";
-        let c_title = CString::from_str(&title).unwrap();
-        ImGui::PushID(c_title.as_ptr());
-        ImGui::Text(c_title.as_ptr());
-        ImGui::SameLine(0f32, -1f32);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 500f32);
-        let vec = ImVec2 { x: 500.0, y: 0.0 };
-        let c_width = custom_layout.wide_screen_coefficient_c_str();
-        if ImGui::Button(c_width.as_ptr() as _, &vec) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        if layout_field_button("Widescreen coefficient", &custom_layout.wide_screen_coefficient_c_str()) {
             custom_layout_context.parse_error = !custom_layout.set_wide_screen_coefficient(&dialog_input(
-                &title,
+                "Widescreen coefficient",
                 &custom_layout.wide_screen_coefficient_str(),
                 SCE_IME_TYPE_EXTENDED_NUMBER,
                 SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT,
                 6,
             ));
         }
-        ImGui::PopID();
 
-        ImGui::PushStyleColor(ImGuiCol__ImGuiCol_Text as _, 0xFF0000FF);
-        if custom_layout_context.parse_error {
-            ImGui::Text(c"Please enter a valid value".as_ptr());
-        } else if custom_layout_context.empty_name {
-            ImGui::Text(c"Layout name can't be empty".as_ptr());
-        } else if custom_layout_context.duplicated_name {
-            ImGui::Text(c"Layout with same name already exists".as_ptr());
+        ImGui::EndChild();
+        ImGui::SameLine(0.0, (*ImGui::GetStyle()).ItemSpacing.x);
+        let preview_sz = ImVec2 { x: 0.0, y: body_height };
+        ImGui::BeginChild(c"##layout_preview".as_ptr(), &preview_sz, false, 0);
+        draw_layout_preview(custom_layout);
+        ImGui::EndChild();
+
+        if has_error {
+            ImGui::PushStyleColor(ImGuiCol__ImGuiCol_Text as _, 0xFF0000FF);
+            if custom_layout_context.parse_error {
+                ImGui::Text(c"Please enter a valid value".as_ptr());
+            } else if custom_layout_context.empty_name {
+                ImGui::Text(c"Layout name can't be empty".as_ptr());
+            } else {
+                ImGui::Text(c"Layout with same name already exists".as_ptr());
+            }
+            ImGui::PopStyleColor(1);
         }
-        ImGui::PopStyleColor(1);
 
         let vec = ImVec2 { x: -1.0, y: 0.0 };
         if ImGui::Button(c"Save layout".as_ptr(), &vec) {
             if custom_layout.name.is_empty() {
                 custom_layout_context.empty_name = true;
+            } else if global_settings.add_custom_layout(custom_layout.clone()) {
+                return true;
             } else {
-                if global_settings.add_custom_layout(custom_layout.clone()) {
-                    return true;
-                } else {
-                    custom_layout_context.duplicated_name = true;
-                }
+                custom_layout_context.duplicated_name = true;
             }
         }
         false

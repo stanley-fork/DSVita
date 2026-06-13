@@ -398,6 +398,26 @@ impl CustomLayout {
         CString::from_str(&self.name).unwrap()
     }
 
+    /// The four corners (top-left, top-right, bottom-right, bottom-left) of a
+    /// screen in presenter-screen pixel space, applying the same size/rotation/
+    /// position transform used when actually rendering the layout. Used by the
+    /// layout-editor preview so it stays faithful to the real output.
+    pub fn screen_corners(&self, index: usize) -> [(f32, f32); 4] {
+        let width_scale = self.sizes[index].0 as f32 / DISPLAY_WIDTH as f32;
+        let height_scale = self.sizes[index].1 as f32 / DISPLAY_HEIGHT as f32;
+        let rot = self.rotation[index] as f32;
+        let mtx = Matrix3::new_rotation(PI / 180.0 * rot) * Matrix3::new_nonuniform_scaling(&Vector2::new(width_scale, height_scale));
+        let top_left = mtx * Vector3::new(-(DISPLAY_WIDTH as f32 / 2.0), -(DISPLAY_HEIGHT as f32 / 2.0), 1.0);
+        let trans = Matrix3::new_translation(&Vector2::new(self.pos[index].0 as f32, self.pos[index].1 as f32)) * Matrix3::new_translation(&Vector2::new(top_left.x.abs(), top_left.y.abs())) * mtx;
+        let hw = DISPLAY_WIDTH as f32 / 2.0;
+        let hh = DISPLAY_HEIGHT as f32 / 2.0;
+        let corner = |x: f32, y: f32| {
+            let p = trans * Vector3::new(x, y, 1.0);
+            (p.x, p.y)
+        };
+        [corner(-hw, -hh), corner(hw, -hh), corner(hw, hh), corner(-hw, hh)]
+    }
+
     pub fn width_str(&self, index: usize) -> String {
         self.sizes[index].0.to_string()
     }

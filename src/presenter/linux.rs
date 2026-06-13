@@ -7,7 +7,7 @@ use crate::presenter::imgui::root::{
     ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGuiConfigFlags__ImGuiConfigFlags_NavEnableKeyboard, ImGuiInputTextFlags__ImGuiInputTextFlags_Password, ImGui_ImplSdlGL3_Init,
     ImGui_ImplSdlGL3_NewFrame, ImGui_ImplSdlGL3_ProcessEvent, ImGui_ImplSdlGL3_RenderDrawData, ImVec2,
 };
-use crate::presenter::ui::{init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
+use crate::presenter::ui::{draw_layout_preview, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
 use crate::presenter::{PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
@@ -320,8 +320,88 @@ impl UiBackend for Presenter {
     }
 }
 
-pub fn show_layout_create_settings(_: &mut GlobalSettings, _: &mut CustomLayoutContext, _: &mut CustomLayout) -> bool {
-    true
+unsafe fn input_dimension(label: &CStr, value: &mut u16) {
+    let mut v = *value as i32;
+    if ImGui::InputInt(label.as_ptr(), &mut v, 1, 10, 0) {
+        *value = v.clamp(0, u16::MAX as i32) as u16;
+    }
+}
+
+pub fn show_layout_create_settings(global_settings: &mut GlobalSettings, custom_layout_context: &mut CustomLayoutContext, custom_layout: &mut CustomLayout) -> bool {
+    unsafe {
+        // Reserve the Save button (plus one error line only when an error is
+        // shown) so the fields/preview span all the way down to the button.
+        let has_error = custom_layout_context.empty_name || custom_layout_context.duplicated_name;
+        let mut footer = ImGui::GetFrameHeightWithSpacing();
+        if has_error {
+            footer += ImGui::GetTextLineHeightWithSpacing();
+        }
+        let body_height = (ImGui::GetContentRegionAvail().y - footer).max(0.0);
+
+        let fields_sz = ImVec2 { x: 430.0, y: body_height };
+        if ImGui::BeginChild(c"##layout_fields".as_ptr(), &fields_sz, false, 0) {
+            ImGui::PushItemWidth(150.0);
+
+            let mut name = [0u8; 33];
+            let len = min(name.len() - 1, custom_layout.name.len());
+            name[..len].copy_from_slice(&custom_layout.name.as_bytes()[..len]);
+            if ImGui::InputText(c"Layout name".as_ptr(), name.as_mut_ptr(), name.len(), 0, None, ptr::null_mut()) {
+                custom_layout.name = CStr::from_ptr(name.as_ptr()).to_str().unwrap_or("").to_string();
+            }
+
+            for (i, screen) in [(0usize, c"Top screen"), (1usize, c"Bottom screen")] {
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::TextDisabled(screen.as_ptr());
+                ImGui::PushID3(i as _);
+                input_dimension(c"Width", &mut custom_layout.sizes[i].0);
+                input_dimension(c"Height", &mut custom_layout.sizes[i].1);
+                input_dimension(c"Position X", &mut custom_layout.pos[i].0);
+                input_dimension(c"Position Y", &mut custom_layout.pos[i].1);
+                input_dimension(c"Rotation", &mut custom_layout.rotation[i]);
+                ImGui::PopID();
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::InputFloat(c"Widescreen coefficient".as_ptr(), &mut custom_layout.wide_screen_coefficient, 0.05, 0.5, c"%.3f".as_ptr(), 0);
+
+            ImGui::PopItemWidth();
+        }
+        ImGui::EndChild();
+
+        ImGui::SameLine(0.0, (*ImGui::GetStyle()).ItemSpacing.x);
+
+        let preview_sz = ImVec2 { x: 0.0, y: body_height };
+        if ImGui::BeginChild(c"##layout_preview".as_ptr(), &preview_sz, false, 0) {
+            draw_layout_preview(custom_layout);
+        }
+        ImGui::EndChild();
+
+        if has_error {
+            ImGui::PushStyleColor(ImGuiCol__ImGuiCol_Text as _, 0xFF0000FF);
+            if custom_layout_context.empty_name {
+                ImGui::Text(c"Layout name can't be empty".as_ptr());
+            } else {
+                ImGui::Text(c"A layout with that name already exists".as_ptr());
+            }
+            ImGui::PopStyleColor(1);
+        }
+
+        let vec = ImVec2 { x: -1.0, y: 0.0 };
+        if ImGui::Button(c"Save layout".as_ptr(), &vec) {
+            if custom_layout.name.is_empty() {
+                custom_layout_context.empty_name = true;
+                custom_layout_context.duplicated_name = false;
+            } else if global_settings.add_custom_layout(custom_layout.clone()) {
+                return true;
+            } else {
+                custom_layout_context.empty_name = false;
+                custom_layout_context.duplicated_name = true;
+            }
+        }
+        false
+    }
 }
 
 pub fn show_retroachievements_settings(global_settings: &mut GlobalSettings, login_context: &mut RALoginContext, context: &mut RaContext) {

@@ -2,7 +2,8 @@ use crate::cartridge_io::{CartridgeIo, CartridgePreview};
 use crate::core::graphics::gpu_renderer::GpuRenderer;
 use crate::global_settings::GlobalSettings;
 use crate::presenter::imgui::root::{
-    ImDrawData, ImFontAtlas_AddFontFromMemoryTTF, ImFontAtlas_GetGlyphRangesDefault, ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCond__ImGuiSetCond_Always,
+    ImDrawData, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF, ImFontAtlas_GetGlyphRangesDefault,
+    ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCond__ImGuiSetCond_Always,
     ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha,
     ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse,
     ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar,
@@ -11,11 +12,13 @@ use crate::presenter::imgui::root::{
 use crate::presenter::{show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
-use crate::settings::{SettingValue, Settings, SettingsConfig};
+use crate::settings::{SettingValue, Settings, SettingsConfig, SETTING_GROUPS};
 use std::ffi::CString;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs, mem, ptr};
+
+// ── UI Backend trait ──
 
 pub trait UiBackend {
     fn init(&mut self);
@@ -24,10 +27,261 @@ pub trait UiBackend {
     fn swap_window(&mut self);
 }
 
+// ── Window helpers ──
+
+const OVERLAY_FLAGS: u32 =
+    (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags__ImGuiWindowFlags_NoResize | ImGuiWindowFlags__ImGuiWindowFlags_NoMove | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as u32;
+
+const PANEL_FLAGS: u32 = OVERLAY_FLAGS;
+
+const RIGHT_PANEL_FLAGS: u32 = (PANEL_FLAGS | ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing) as u32;
+
+#[inline]
+unsafe fn begin_window(id: &std::ffi::CStr, x: f32, y: f32, w: f32, h: f32, flags: u32) -> bool {
+    let pos = ImVec2 { x, y };
+    let pivot = ImVec2 { x: 0.0, y: 0.0 };
+    ImGui::SetNextWindowPos(&pos, ImGuiCond__ImGuiSetCond_Always as _, &pivot);
+    let sz = ImVec2 { x: w, y: h };
+    ImGui::SetNextWindowSize(&sz, ImGuiCond__ImGuiSetCond_Always as _);
+    ImGui::Begin(id.as_ptr() as _, ptr::null_mut(), flags as _)
+}
+
+#[inline]
+unsafe fn begin_fullscreen_overlay(id: &std::ffi::CStr) -> bool {
+    begin_window(id, 0.0, 0.0, 960.0, 544.0, OVERLAY_FLAGS)
+}
+
+#[inline]
+unsafe fn full_width_button(label: &std::ffi::CStr) -> bool {
+    let sz = ImVec2 { x: -1f32, y: 0f32 };
+    ImGui::Button(label.as_ptr() as _, &sz)
+}
+
+#[inline]
+unsafe fn icon_image(tex: u32) {
+    let sz = ImVec2 { x: 128f32, y: 128f32 };
+    let uv = ImVec2 { x: 0f32, y: 0f32 };
+    let uv1 = ImVec2 { x: 1f32, y: 1f32 };
+    let tint = ImVec4 { x: 1f32, y: 1f32, z: 1f32, w: 1f32 };
+    let border = ImVec4 { x: 0f32, y: 0f32, z: 0f32, w: 0f32 };
+    ImGui::Image(tex as _, &sz, &uv, &uv1, &tint, &border);
+}
+
+#[inline]
+unsafe fn cancel_pressed() -> bool {
+    // Edge-triggered: imgui sets DownDuration to 0.0 only on the frame the
+    // input is first pressed (-1.0 when up, increasing while held). Using the
+    // raw NavInputs value instead would fire every frame the key is held, which
+    // re-triggers back-navigation once imgui has already stepped out a level.
+    (*ImGui::GetIO()).NavInputsDownDuration[ImGuiNavInput__ImGuiNavInput_Cancel as usize] == 0f32
+}
+
+/// Manual tab bar for the settings categories (imgui 1.61 has no TabBar API):
+/// a row of equal-width buttons, the active one highlighted. Labels come from
+/// `SETTING_GROUPS`. Sets `*active` to the clicked tab index.
+unsafe fn settings_tab_bar(active: &mut usize) {
+    let spacing = (*ImGui::GetStyle()).ItemSpacing.x;
+    let n = SETTING_GROUPS.len() as f32;
+    let total = ImGui::GetContentRegionAvail().x;
+    let w = (total - spacing * (n - 1.0)) / n;
+    for (i, (name, _)) in SETTING_GROUPS.iter().enumerate() {
+        if i > 0 {
+            ImGui::SameLine(0.0, -1.0);
+        }
+        let is_active = *active == i;
+        if is_active {
+            ImGui::PushStyleColor(ImGuiCol__ImGuiCol_Button as _, 0xFFCC8844u32);
+        }
+        let label = CString::new(*name).unwrap();
+        let sz = ImVec2 { x: w, y: 0.0 };
+        if ImGui::Button(label.as_ptr() as _, &sz) {
+            *active = i;
+        }
+        if is_active {
+            ImGui::PopStyleColor(1);
+        }
+    }
+}
+
+/// Renders the tabbed settings body: the category tab bar, the active tab's
+/// settings in a scroll child, then a pinned description area showing the
+/// focused/hovered setting's description. `button_reserve` is extra height to
+/// keep free below for a caller button (e.g. Save); 0 if none.
+///
+/// The description is pinned (not inline under each setting) because gamepad nav
+/// only scrolls far enough to reveal the focused control — text rendered below
+/// the last control would otherwise be unreachable.
+unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab: &mut usize, only_runtime: bool, button_reserve: f32, active_desc: &mut &'static str) {
+    settings_tab_bar(active_tab);
+    ImGui::Separator();
+
+    // Reserve only as much room as the (previous frame's) active description
+    // actually needs — one-frame lag — so the scroll list fills the rest instead
+    // of always reserving the worst-case footer height.
+    let footer_height = if active_desc.is_empty() {
+        0.0
+    } else {
+        let avail_w = ImGui::GetContentRegionAvail().x;
+        let prev = CString::new(*active_desc).unwrap();
+        let text_h = ImGui::CalcTextSize(prev.as_ptr() as _, ptr::null(), false, avail_w).y;
+        text_h + (*ImGui::GetStyle()).ItemSpacing.y * 3.0
+    };
+
+    let child_sz = ImVec2 { x: 0f32, y: -(footer_height + button_reserve) };
+    let mut new_desc = "";
+    if ImGui::BeginChild(c"##settings_scroll".as_ptr() as _, &child_sz, false, 0) {
+        new_desc = render_tab_settings(settings_config, *active_tab, only_runtime);
+    }
+    ImGui::EndChild();
+    *active_desc = new_desc;
+
+    if !new_desc.is_empty() {
+        ImGui::Separator();
+        let description = CString::new(new_desc).unwrap();
+        ImGui::PushTextWrapPos(0f32);
+        ImGui::TextDisabled(description.as_ptr() as _);
+        ImGui::PopTextWrapPos();
+    }
+}
+
+/// True if the cancel/back press should close the current overlay rather than
+/// step back a level. imgui processes Cancel in NewFrame *before* our code: if
+/// nav was inside a child/popup it already popped one level this frame, so the
+/// overlay must only close when it was itself the focused window last frame.
+/// Callers pass the previous frame's `IsWindowFocused` measurement.
+unsafe fn back_closes_overlay(prev_overlay_focused: bool) -> bool {
+    cancel_pressed() && prev_overlay_focused
+}
+
+// ── Styling & shared dialog helpers ──
+
+/// One-time global style tweaks for a cleaner, more rounded look.
+unsafe fn setup_style() {
+    let style = &mut *ImGui::GetStyle();
+    style.WindowRounding = 0.0; // fullscreen panels look better square
+    style.ChildRounding = 6.0;
+    style.FrameRounding = 6.0;
+    style.PopupRounding = 8.0;
+    style.GrabRounding = 6.0;
+    style.ScrollbarRounding = 8.0;
+    style.WindowBorderSize = 0.0;
+    style.FrameBorderSize = 0.0;
+    style.PopupBorderSize = 0.0;
+    style.WindowPadding = ImVec2 { x: 10.0, y: 8.0 };
+    style.FramePadding = ImVec2 { x: 8.0, y: 4.0 };
+    style.ItemSpacing = ImVec2 { x: 7.0, y: 5.0 };
+    style.ItemInnerSpacing = ImVec2 { x: 6.0, y: 4.0 };
+    style.ScrollbarSize = 12.0;
+    style.GrabMinSize = 10.0;
+    style.ButtonTextAlign = ImVec2 { x: 0.5, y: 0.5 };
+}
+
+/// Horizontally centers `text` within the content region and draws it.
+unsafe fn centered_text(text: &std::ffi::CStr) {
+    let w = ImGui::CalcTextSize(text.as_ptr(), ptr::null(), false, 0.0).x;
+    let avail = ImGui::GetContentRegionAvail().x;
+    if avail > w {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - w) * 0.5);
+    }
+    ImGui::Text(text.as_ptr() as _);
+}
+
+/// Large centered heading followed by a separator. Top of a dialog/overlay.
+unsafe fn dialog_title(text: &std::ffi::CStr) {
+    ImGui::SetWindowFontScale(1.4);
+    centered_text(text);
+    ImGui::SetWindowFontScale(1.0);
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+}
+
+/// Centered, fixed-width button for vertical menus.
+unsafe fn menu_button(label: &std::ffi::CStr, width: f32) -> bool {
+    let avail = ImGui::GetContentRegionAvail().x;
+    if avail > width {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - width) * 0.5);
+    }
+    let sz = ImVec2 { x: width, y: 42.0 };
+    ImGui::Button(label.as_ptr() as _, &sz)
+}
+
+/// Centers the next window on screen — call before `BeginPopupModal`.
+unsafe fn center_next_window() {
+    let center = ImVec2 { x: 480.0, y: 272.0 };
+    let pivot = ImVec2 { x: 0.5, y: 0.5 };
+    ImGui::SetNextWindowPos(&center, ImGuiCond__ImGuiSetCond_Always as _, &pivot);
+}
+
+/// Draws a scaled preview of the presenter screen with the two DS screens
+/// positioned/sized/rotated exactly as the layout would render them. Reserves
+/// the canvas area via a Dummy so surrounding layout flows normally.
+pub(crate) unsafe fn draw_layout_preview(custom_layout: &crate::screen_layouts::CustomLayout) {
+    let dl = ImGui::GetWindowDrawList();
+    let origin = ImGui::GetCursorScreenPos();
+    let avail = ImGui::GetContentRegionAvail();
+
+    let scale = (avail.x / PRESENTER_SCREEN_WIDTH as f32).min(avail.y / PRESENTER_SCREEN_HEIGHT as f32).max(0.0);
+    let box_w = PRESENTER_SCREEN_WIDTH as f32 * scale;
+    let box_h = PRESENTER_SCREEN_HEIGHT as f32 * scale;
+    let ox = origin.x + (avail.x - box_w) * 0.5;
+    let oy = origin.y;
+
+    let bg_min = ImVec2 { x: ox, y: oy };
+    let bg_max = ImVec2 { x: ox + box_w, y: oy + box_h };
+    // rounding = 0 so the corner-flags arg (whose meaning differs across imgui
+    // versions: Vita SDK vs the bundled 1.61) doesn't matter.
+    ImDrawList_AddRectFilled(dl, &bg_min, &bg_max, 0xFF1A1A1A, 0.0, 0);
+    ImDrawList_AddRect(dl, &bg_min, &bg_max, 0xFF505050, 0.0, 0, 1.0);
+
+    const FILL: [u32; 2] = [0xCCC8783C, 0xCC3C78C8]; // top: blue-ish, bottom: orange-ish (0xAABBGGRR)
+    const OUTLINE: [u32; 2] = [0xFFE89858, 0xFF58A8E8];
+    const LABELS: [&std::ffi::CStr; 2] = [c"Top", c"Bottom"];
+
+    for i in 0..2 {
+        let corners = custom_layout.screen_corners(i);
+        let p: [ImVec2; 4] = [
+            ImVec2 { x: ox + corners[0].0 * scale, y: oy + corners[0].1 * scale },
+            ImVec2 { x: ox + corners[1].0 * scale, y: oy + corners[1].1 * scale },
+            ImVec2 { x: ox + corners[2].0 * scale, y: oy + corners[2].1 * scale },
+            ImVec2 { x: ox + corners[3].0 * scale, y: oy + corners[3].1 * scale },
+        ];
+        ImDrawList_AddQuadFilled(dl, &p[0], &p[1], &p[2], &p[3], FILL[i]);
+        ImDrawList_AddQuad(dl, &p[0], &p[1], &p[2], &p[3], OUTLINE[i], 1.5);
+
+        let center = ImVec2 { x: (p[0].x + p[1].x + p[2].x + p[3].x) * 0.25, y: (p[0].y + p[1].y + p[2].y + p[3].y) * 0.25 };
+        let label = LABELS[i];
+        let ts = ImGui::CalcTextSize(label.as_ptr(), ptr::null(), false, 0.0);
+        let text_pos = ImVec2 { x: center.x - ts.x * 0.5, y: center.y - ts.y * 0.5 };
+        ImDrawList_AddText(dl, &text_pos, 0xFFFFFFFF, label.as_ptr(), ptr::null());
+    }
+
+    let reserve = ImVec2 { x: avail.x, y: box_h };
+    ImGui::Dummy(&reserve);
+}
+
+/// Dim, centered "go back" hint pinned to the bottom of a fullscreen overlay.
+unsafe fn back_hint() {
+    let target = ImGui::GetWindowHeight() - ImGui::GetFrameHeightWithSpacing();
+    if target > ImGui::GetCursorPosY() {
+        ImGui::SetCursorPosY(target);
+    }
+    let text = c"Press Circle to go back";
+    let w = ImGui::CalcTextSize(text.as_ptr(), ptr::null(), false, 0.0).x;
+    let avail = ImGui::GetContentRegionAvail().x;
+    if avail > w {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - w) * 0.5);
+    }
+    ImGui::TextDisabled(text.as_ptr() as _);
+}
+
+// ── Font initialization ──
+
 pub fn init_ui(ui_backend: &mut impl UiBackend) {
     unsafe {
         ImGui::CreateContext(ptr::null_mut());
         ImGui::StyleColorsDark(ptr::null_mut());
+        setup_style();
         ui_backend.init();
 
         let font = include_bytes!("../../font/OpenSans-Regular.ttf");
@@ -45,69 +299,264 @@ pub fn init_ui(ui_backend: &mut impl UiBackend) {
     }
 }
 
-unsafe fn show_settings(settings_config: &mut SettingsConfig, only_runtime: bool) {
-    for (i, setting) in settings_config.settings.get_all_mut().iter_mut().enumerate() {
-        if only_runtime && !setting.runtime {
+// ── Setting rendering ──
+
+/// Renders one setting row (title + control). Returns true if the control is
+/// currently focused or hovered, so the caller can surface its description.
+unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirty: &mut bool, buttons_width: f32) -> bool {
+    let title = CString::new(setting.title).unwrap();
+    ImGui::Text(title.as_ptr() as _);
+    ImGui::SameLine(0f32, -1f32);
+    ImGui::PushID3(id as _);
+
+    match &mut setting.value {
+        SettingValue::Bool(_) => {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - buttons_width);
+            let value = CString::new(setting.value.to_string()).unwrap();
+            let sz = ImVec2 { x: buttons_width, y: 0f32 };
+            if ImGui::Button(value.as_ptr() as _, &sz) {
+                setting.value.next();
+                *dirty = true;
+            }
+        }
+        SettingValue::List(inner) => {
+            const COMBO_WIDTH: f32 = 200f32;
+            if inner.selection >= inner.values.len() {
+                inner.selection = 0;
+            }
+            let value = CString::from_str(&inner.values[inner.selection]).unwrap();
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - COMBO_WIDTH);
+            let id = CString::new(format!("##{id}_list")).unwrap();
+            // Constrain the combo to COMBO_WIDTH so it doesn't overrun the window
+            // edge (which would make the window horizontally scrollable).
+            ImGui::PushItemWidth(COMBO_WIDTH);
+            if ImGui::BeginCombo(id.as_ptr() as _, value.as_ptr() as _, 0) {
+                for (j, val) in inner.values.iter().enumerate() {
+                    let is_selected = j == inner.selection;
+                    let val_cstr = CString::from_str(val).unwrap();
+                    let sz = ImVec2 { x: 0f32, y: 0f32 };
+                    if ImGui::Selectable(val_cstr.as_ptr() as _, is_selected, 0, &sz) {
+                        inner.selection = j;
+                        *dirty = true;
+                    }
+                    if is_selected {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::PopItemWidth();
+        }
+    }
+
+    ImGui::PopID();
+
+    // Captured before the trailing Dummy so it refers to the control item.
+    let active = ImGui::IsItemHovered(0) || ImGui::IsItemFocused();
+
+    let sz = ImVec2 { x: 0f32, y: 8f32 };
+    ImGui::Dummy(&sz);
+    active
+}
+
+/// Renders the active tab's settings, returning the description of the
+/// focused/hovered setting (empty if none).
+unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, tab: usize, only_runtime: bool) -> &'static str {
+    let (_, indices) = SETTING_GROUPS[tab];
+    let all = settings_config.settings.get_all_mut();
+    let mut active_desc = "";
+    for &index in indices {
+        let i = index as usize;
+        if only_runtime && !all[i].runtime {
             continue;
         }
-
-        let title = CString::new(setting.title).unwrap();
-
-        ImGui::Text(title.as_ptr() as _);
-        ImGui::SameLine(0f32, -1f32);
-
-        ImGui::PushID3(i as _);
-
-        match &mut setting.value {
-            SettingValue::Bool(_) => {
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 50f32);
-
-                let value = CString::new(setting.value.to_string()).unwrap();
-                let vec = ImVec2 { x: 50f32, y: 0f32 };
-
-                if ImGui::Button(value.as_ptr() as _, &vec) {
-                    setting.value.next();
-                    settings_config.dirty = true;
-                }
-            }
-            SettingValue::List(inner) => {
-                if inner.selection >= inner.values.len() {
-                    inner.selection = 0;
-                }
-                let value = CString::from_str(&inner.values[inner.selection]).unwrap();
-
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 125f32);
-
-                let id = CString::new(format!("##{i}_list")).unwrap();
-                if ImGui::BeginCombo(id.as_ptr() as _, value.as_ptr() as _, 0) {
-                    for (i, value) in inner.values.iter().enumerate() {
-                        let is_selected = i == inner.selection;
-                        let value_cstr = CString::from_str(value).unwrap();
-                        let size = ImVec2 { x: 0f32, y: 0f32 };
-                        if ImGui::Selectable(value_cstr.as_ptr() as _, is_selected, 0, &size) {
-                            inner.selection = i;
-                            settings_config.dirty = true;
-                        }
-                        if is_selected {
-                            ImGui::SetItemDefaultFocus();
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
-            }
+        if render_setting(&mut all[i], i, &mut settings_config.dirty, 50f32) {
+            active_desc = all[i].description;
         }
-
-        ImGui::PopID();
-
-        if !setting.description.is_empty() {
-            let description = CString::new(setting.description).unwrap();
-            ImGui::Text(description.as_ptr() as _);
-        }
-
-        let vec = ImVec2 { x: 0f32, y: 10f32 };
-        ImGui::Dummy(&vec);
     }
+    active_desc
 }
+
+// ── Sub-overlay rendering ──
+
+unsafe fn render_global_settings_overlay(show: &mut bool, layout_settings: &mut bool, ra_settings: &mut bool, overlay_focused: &mut bool) {
+    if !*show {
+        *overlay_focused = true;
+        return;
+    }
+    if !begin_fullscreen_overlay(c"##globalsettings") {
+        ImGui::End();
+        return;
+    }
+    dialog_title(c"Global Settings");
+
+    const BUTTON_WIDTH: f32 = 380.0;
+    if menu_button(c"Custom screen layout", BUTTON_WIDTH) {
+        *layout_settings = true;
+    }
+    if menu_button(c"RetroAchievements", BUTTON_WIDTH) {
+        *ra_settings = true;
+    }
+
+    back_hint();
+
+    // Only close when this overlay itself is focused (not a sub-overlay stacked
+    // on top), so Back steps down one level instead of closing the whole stack.
+    if back_closes_overlay(*overlay_focused) {
+        *show = false;
+    }
+    *overlay_focused = ImGui::IsWindowFocused(0);
+    ImGui::End();
+}
+
+unsafe fn render_layout_settings_overlay(
+    show: &mut bool,
+    global_settings: &mut GlobalSettings,
+    screen_layouts: &mut ScreenLayouts,
+    custom_layout: &mut bool,
+    custom_layout_context: &mut CustomLayoutContext,
+    new_custom_layout: &mut CustomLayout,
+    selected_custom_layout: &mut Option<usize>,
+    overlay_focused: &mut bool,
+) {
+    if !*show {
+        *overlay_focused = true;
+        return;
+    }
+    if !begin_fullscreen_overlay(c"##layoutsettings") {
+        ImGui::End();
+        return;
+    }
+    dialog_title(c"Custom Screen Layouts");
+
+    center_next_window();
+    if ImGui::BeginPopupModal(
+        c"customlayoutmenu".as_ptr(),
+        ptr::null_mut(),
+        (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
+            | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
+    ) {
+        let bsz = ImVec2 { x: 120.0, y: 44.0 };
+        if ImGui::Button(c"Delete".as_ptr(), &bsz) {
+            global_settings.delete_custom_layout(selected_custom_layout.unwrap());
+            screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
+            *selected_custom_layout = None;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine(0.0, (*ImGui::GetStyle()).ItemSpacing.x);
+        if ImGui::Button(c"Back".as_ptr(), &bsz) {
+            *selected_custom_layout = None;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if selected_custom_layout.is_some() {
+        ImGui::OpenPopup(c"customlayoutmenu".as_ptr());
+    }
+
+    const BUTTON_WIDTH: f32 = 380.0;
+    if global_settings.custom_layouts.is_empty() {
+        centered_text(c"No custom layouts yet.");
+        ImGui::Spacing();
+    }
+    for (i, layout) in global_settings.custom_layouts.iter().enumerate() {
+        let name = layout.name_c_str();
+        if menu_button(&name, BUTTON_WIDTH) {
+            *selected_custom_layout = Some(i);
+        }
+    }
+
+    if menu_button(c"Add custom layout", BUTTON_WIDTH) {
+        *custom_layout = true;
+        *custom_layout_context = CustomLayoutContext::default();
+        *new_custom_layout = CustomLayout::default();
+    }
+
+    back_hint();
+
+    // A combo/popup/child step-out is handled by imgui; only close this overlay
+    // (down to global settings) when it is itself the focused window.
+    if back_closes_overlay(*overlay_focused) {
+        *show = false;
+    }
+    *overlay_focused = ImGui::IsWindowFocused(0);
+    ImGui::End();
+}
+
+unsafe fn render_custom_layout_overlay(
+    show: &mut bool,
+    global_settings: &mut GlobalSettings,
+    screen_layouts: &mut ScreenLayouts,
+    custom_layout_context: &mut CustomLayoutContext,
+    new_custom_layout: &mut CustomLayout,
+    overlay_focused: &mut bool,
+) {
+    if !*show {
+        *overlay_focused = true;
+        return;
+    }
+    if !begin_fullscreen_overlay(c"##createcustomlayout") {
+        ImGui::End();
+        return;
+    }
+    dialog_title(c"New Custom Layout");
+    if show_layout_create_settings(global_settings, custom_layout_context, new_custom_layout) {
+        *show = false;
+        screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
+    }
+    if back_closes_overlay(*overlay_focused) {
+        *show = false;
+    }
+    *overlay_focused = ImGui::IsWindowFocused(0);
+    ImGui::End();
+}
+
+unsafe fn render_ra_settings_overlay(
+    show: &mut bool,
+    global_settings: &mut GlobalSettings,
+    ra_context: &mut RaContext,
+    ra_login_context: &mut RALoginContext,
+    overlay_focused: &mut bool,
+) {
+    if !*show {
+        *overlay_focused = true;
+        return;
+    }
+    if !begin_fullscreen_overlay(c"##retroachievements") {
+        ImGui::End();
+        return;
+    }
+    dialog_title(c"RetroAchievements");
+    if ra_login_context.logging_in {
+        center_next_window();
+        if ImGui::BeginPopupModal(
+            c"retroachievements_login_dialog".as_ptr(),
+            ptr::null_mut(),
+            (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
+                | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
+                | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
+                | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
+                | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
+        ) {
+            centered_text(c"Logging in...");
+            ImGui::EndPopup();
+        }
+        ImGui::OpenPopup(c"retroachievements_login_dialog".as_ptr());
+    }
+    show_retroachievements_settings(global_settings, ra_login_context, ra_context);
+    back_hint();
+    if back_closes_overlay(*overlay_focused) {
+        *show = false;
+    }
+    *overlay_focused = ImGui::IsWindowFocused(0);
+    ImGui::End();
+}
+
+// ── Context structs ──
 
 #[derive(Default)]
 pub struct CustomLayoutContext {
@@ -124,61 +573,50 @@ pub struct RALoginContext {
     pub logging_in: bool,
 }
 
+// ── Main menu ──
+
 pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext, ui_backend: &mut impl UiBackend) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
     unsafe {
         let saves_path = cartridge_path.join("saves");
         let global_settings_path = cartridge_path.join("global_settings");
         let settings_path = cartridge_path.join("settings");
-
         let _ = fs::create_dir_all(&cartridge_path);
         let _ = fs::create_dir_all(&saves_path);
         let _ = fs::create_dir_all(&global_settings_path);
         let _ = fs::create_dir_all(&settings_path);
 
-        let mut global_settings = GlobalSettings::new(global_settings_path).unwrap();
+        let mut global_settings = GlobalSettings::new(global_settings_path.clone()).unwrap();
         screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
-
         ra_context.set_cache_dir(cartridge_path.join("ra"));
 
-        let mut cartridges: Vec<CartridgePreview> = match fs::read_dir(&cartridge_path) {
-            Ok(rom_dir) => rom_dir
-                .into_iter()
-                .filter_map(|dir| dir.ok().and_then(|dir| dir.file_type().ok().and_then(|file_type| if file_type.is_file() { Some(dir) } else { None })))
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    let name = path.file_name().unwrap().to_str().unwrap();
-                    if name.to_lowercase().ends_with(".nds") {
-                        CartridgePreview::new(path).ok()
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-            Err(_) => Vec::new(),
-        };
+        let cartridges = load_cartridges(&cartridge_path);
+        let mut settings_configs: Vec<SettingsConfig> = cartridges.iter().map(|c| SettingsConfig::new(settings_path.join(format!("{}.ini", c.file_name)))).collect();
 
-        cartridges.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-
-        let mut settings_configs = Vec::new();
-        for cartridge in &cartridges {
-            let path = settings_path.join(format!("{}.ini", cartridge.file_name));
-            settings_configs.push(SettingsConfig::new(path));
-        }
-
+        // State
         let mut show_global_settings = false;
         let mut hovered: Option<usize> = None;
-        static mut SELECTED: Option<usize> = None;
+        let mut detail_game: Option<usize> = None;
+        let mut active_tab: usize = 0;
+        let mut detail_overlay_focused = true;
+        let mut detail_active_desc: &'static str = "";
         let mut launched = false;
 
+        // Back-nav focus tracking for the stacked global-settings overlays, so
+        // Back closes only the topmost one (see render_game_detail_overlay).
+        let mut global_settings_focused = true;
         let mut layout_settings = false;
-        let mut custom_layout = false;
+        let mut layout_settings_focused = true;
+        let mut custom_layout_show = false;
+        let mut custom_layout_focused = true;
         let mut custom_layout_context = CustomLayoutContext::default();
         let mut new_custom_layout = CustomLayout::default();
         let mut selected_custom_layout: Option<usize> = None;
 
         let mut ra_settings = false;
+        let mut ra_settings_focused = true;
         let mut ra_login_context = RALoginContext::default();
 
+        // Game icon texture
         let mut icon_tex = 0;
         gl::GenTextures(1, &mut icon_tex);
         gl::BindTexture(gl::TEXTURE_2D, icon_tex);
@@ -191,334 +629,56 @@ pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayout
                 return None;
             }
 
-            if let Some(i) = SELECTED.or(hovered) {
-                let cartridge: &CartridgePreview = &cartridges[i];
-                gl::BindTexture(gl::TEXTURE_2D, icon_tex);
-                match cartridge.read_icon() {
-                    Ok(icon) => gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, 32, 32, gl::RGBA as _, gl::UNSIGNED_BYTE, icon.as_ptr() as _),
-                    Err(_) => {
-                        const EMPTY_ICON: [u32; 32 * 32] = [0u32; 32 * 32];
-                        gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, 32, 32, gl::RGBA as _, gl::UNSIGNED_BYTE, EMPTY_ICON.as_ptr() as _)
-                    }
-                }
+            // Update icon texture
+            if let Some(i) = detail_game.or(hovered) {
+                load_icon_texture(icon_tex, &cartridges[i]);
             }
 
-            if ImGui::BeginMainMenuBar() {
-                let text = if cartridges.is_empty() {
-                    format!("No roms found in {}", cartridge_path.to_str().unwrap())
-                } else {
-                    format!("Found {} roms in {}", cartridges.len(), cartridge_path.to_str().unwrap())
-                };
-                let text = CString::from_str(&text).unwrap();
-                ImGui::Text(text.as_ptr() as _);
+            // Menu bar
+            render_menu_bar(&cartridges, &cartridge_path);
 
-                ImGui::EndMainMenuBar();
-            }
+            // Left panel: game list
+            render_left_panel(&cartridges, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
 
-            let vec = ImVec2 { x: 0.0, y: 27.0 };
-            let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-            ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-            let vec = ImVec2 { x: 700.0, y: 517.0 };
-            ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-            if ImGui::Begin(
-                c"##main".as_ptr() as _,
-                ptr::null_mut(),
-                (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as _,
-            ) {
-                let vec = ImVec2 { x: -1f32, y: 0f32 };
-                if ImGui::Button(c"Global settings".as_ptr() as _, &vec) {
-                    show_global_settings = true;
-                }
-                if ImGui::IsItemHovered(ImGuiHoveredFlags__ImGuiHoveredFlags_Default as _) {
-                    hovered = None
-                }
+            // Right panel: game preview
+            render_right_panel(&cartridges, icon_tex, hovered);
 
-                for (i, cartridge) in cartridges.iter().enumerate() {
-                    let name = CString::new(cartridge.file_name.clone()).unwrap();
-                    if ImGui::Button(name.as_ptr() as _, &vec) {
-                        SELECTED = Some(i);
-                    }
-                    if ImGui::IsItemHovered(ImGuiHoveredFlags__ImGuiHoveredFlags_Default as _) {
-                        hovered = Some(i);
-                    }
-                }
-            }
+            // Game detail menu (tabbed settings)
+            render_game_detail_overlay(
+                &cartridges,
+                &mut settings_configs,
+                screen_layouts,
+                icon_tex,
+                &mut detail_game,
+                &mut active_tab,
+                &mut detail_overlay_focused,
+                &mut detail_active_desc,
+                &mut launched,
+            );
 
-            ImGui::End();
+            // Sub-overlays
+            render_global_settings_overlay(&mut show_global_settings, &mut layout_settings, &mut ra_settings, &mut global_settings_focused);
+            render_layout_settings_overlay(
+                &mut layout_settings,
+                &mut global_settings,
+                screen_layouts,
+                &mut custom_layout_show,
+                &mut custom_layout_context,
+                &mut new_custom_layout,
+                &mut selected_custom_layout,
+                &mut layout_settings_focused,
+            );
+            render_custom_layout_overlay(
+                &mut custom_layout_show,
+                &mut global_settings,
+                screen_layouts,
+                &mut custom_layout_context,
+                &mut new_custom_layout,
+                &mut custom_layout_focused,
+            );
+            render_ra_settings_overlay(&mut ra_settings, &mut global_settings, ra_context, &mut ra_login_context, &mut ra_settings_focused);
 
-            let vec = ImVec2 { x: 700.0, y: 27.0 };
-            let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-            ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-            let vec = ImVec2 { x: 260.0, y: 517.0 };
-            ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-            if ImGui::Begin(
-                c"##info".as_ptr() as _,
-                ptr::null_mut(),
-                (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing) as _,
-            ) {
-                if let Some(i) = hovered {
-                    let cartridge = &cartridges[i];
-
-                    let size = ImVec2 { x: 128f32, y: 128f32 };
-                    let uv0 = ImVec2 { x: 0f32, y: 0f32 };
-                    let uv1 = ImVec2 { x: 1f32, y: 1f32 };
-                    let tint_color = ImVec4 { x: 1f32, y: 1f32, z: 1f32, w: 1f32 };
-                    let border_color = ImVec4 { x: 0f32, y: 0f32, z: 0f32, w: 0f32 };
-                    ImGui::Image(icon_tex as _, &size, &uv0, &uv1, &tint_color, &border_color);
-
-                    match cartridge.read_title() {
-                        Ok(title) => {
-                            let title = CString::new(title).unwrap();
-                            ImGui::Text(title.as_ptr() as _);
-                        }
-                        Err(_) => ImGui::Text(c"Couldn't read game title".as_ptr() as _),
-                    }
-                }
-            }
-
-            ImGui::End();
-
-            if let Some(i) = SELECTED {
-                let vec = ImVec2 { x: 0.0, y: 0.0 };
-                let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-                ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-                let vec = ImVec2 { x: 960.0, y: 544.0 };
-                ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-                if ImGui::Begin(
-                    c"##details".as_ptr() as _,
-                    ptr::null_mut(),
-                    (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as _,
-                ) {
-                    let cartridge = &cartridges[i];
-
-                    let size = ImVec2 { x: 128f32, y: 128f32 };
-                    let uv0 = ImVec2 { x: 0f32, y: 0f32 };
-                    let uv1 = ImVec2 { x: 1f32, y: 1f32 };
-                    let bg_color = ImVec4 { x: 0f32, y: 0f32, z: 0f32, w: 0f32 };
-                    let tint_color = ImVec4 { x: 1f32, y: 1f32, z: 1f32, w: 1f32 };
-                    ImGui::ImageButton(icon_tex as _, &size, &uv0, &uv1, 0, &bg_color, &tint_color);
-
-                    match cartridge.read_title() {
-                        Ok(title) => {
-                            let title = CString::new(title).unwrap();
-                            ImGui::Text(title.as_ptr() as _);
-                        }
-                        Err(_) => ImGui::Text(c"Couldn't read game title".as_ptr() as _),
-                    }
-
-                    let vec = ImVec2 { x: 0f32, y: 10f32 };
-                    ImGui::Dummy(&vec);
-
-                    ImGui::Text(c"First launch will take some time. Please do not exit or shutdown your vita!".as_ptr());
-
-                    let vec = ImVec2 { x: -1f32, y: 0f32 };
-                    if ImGui::Button(c"Launch game".as_ptr() as _, &vec) {
-                        launched = true;
-                    }
-
-                    let vec = ImVec2 { x: 0f32, y: 10f32 };
-                    ImGui::Dummy(&vec);
-
-                    ImGui::Text(c"Settings".as_ptr() as _);
-
-                    let vec = ImVec2 { x: 0f32, y: 10f32 };
-                    ImGui::Dummy(&vec);
-
-                    let settings_config = &mut settings_configs[i];
-                    settings_config.settings.populate_screen_layouts(screen_layouts);
-                    show_settings(settings_config, false);
-
-                    let settings_dirty = settings_config.dirty;
-                    let vec = ImVec2 { x: -1f32, y: 0f32 };
-                    if !settings_dirty {
-                        ImGui::PushItemFlag(ImGuiItemFlags__ImGuiItemFlags_Disabled as _, true);
-                        ImGui::PushStyleVar(ImGuiStyleVar__ImGuiStyleVar_Alpha as _, (*ImGui::GetStyle()).Alpha * 0.5f32);
-                    }
-                    if ImGui::Button(c"Save settings".as_ptr() as _, &vec) {
-                        settings_config.flush();
-                    }
-                    if !settings_dirty {
-                        ImGui::PopItemFlag();
-                        ImGui::PopStyleVar(1);
-                    }
-
-                    if (*ImGui::GetIO()).NavInputs[ImGuiNavInput__ImGuiNavInput_Cancel as usize] != 0f32 {
-                        hovered = SELECTED;
-                        SELECTED = None;
-                    }
-                }
-
-                ImGui::End();
-            } else if custom_layout {
-                let vec = ImVec2 { x: 0.0, y: 0.0 };
-                let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-                ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-                let vec = ImVec2 { x: 960.0, y: 544.0 };
-                ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-                if ImGui::Begin(
-                    c"##createcustomlayout".as_ptr() as _,
-                    ptr::null_mut(),
-                    (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as _,
-                ) {
-                    if show_layout_create_settings(&mut global_settings, &mut custom_layout_context, &mut new_custom_layout) {
-                        custom_layout = false;
-                        screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
-                    }
-
-                    if (*ImGui::GetIO()).NavInputs[ImGuiNavInput__ImGuiNavInput_Cancel as usize] != 0f32 {
-                        custom_layout = false;
-                    }
-                }
-
-                ImGui::End();
-            } else if layout_settings {
-                let vec = ImVec2 { x: 0.0, y: 0.0 };
-                let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-                ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-                let vec = ImVec2 { x: 960.0, y: 544.0 };
-                ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-                if ImGui::Begin(
-                    c"##layoutsettings".as_ptr() as _,
-                    ptr::null_mut(),
-                    (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as _,
-                ) {
-                    let vec = ImVec2 { x: -1f32, y: 0f32 };
-
-                    if ImGui::BeginPopupModal(
-                        c"customlayoutmenu".as_ptr(),
-                        ptr::null_mut(),
-                        (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                            | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                            | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                            | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
-                            | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
-                    ) {
-                        let vec = ImVec2 { x: 100.0, y: 50.0 };
-                        if ImGui::Button(c"Delete".as_ptr(), &vec) {
-                            global_settings.delete_custom_layout(selected_custom_layout.unwrap());
-                            screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
-                            selected_custom_layout = None;
-                            ImGui::CloseCurrentPopup();
-                        }
-                        ImGui::SameLine(0.0, 5.0);
-                        if ImGui::Button(c"Back".as_ptr(), &vec) {
-                            selected_custom_layout = None;
-                            ImGui::CloseCurrentPopup();
-                        }
-
-                        ImGui::EndPopup();
-                    }
-
-                    if selected_custom_layout.is_some() {
-                        ImGui::OpenPopup(c"customlayoutmenu".as_ptr());
-                    }
-
-                    for (i, layout) in global_settings.custom_layouts.iter().enumerate() {
-                        let name = layout.name_c_str();
-                        if ImGui::Button(name.as_ptr(), &vec) {
-                            selected_custom_layout = Some(i);
-                        }
-                    }
-
-                    if ImGui::Button(c"Add custom layout".as_ptr() as _, &vec) {
-                        custom_layout = true;
-                        custom_layout_context = CustomLayoutContext::default();
-                        new_custom_layout = CustomLayout::default();
-                    }
-
-                    if (*ImGui::GetIO()).NavInputs[ImGuiNavInput__ImGuiNavInput_Cancel as usize] != 0f32 {
-                        layout_settings = false;
-                    }
-                }
-
-                ImGui::End();
-            } else if ra_settings {
-                let vec = ImVec2 { x: 0.0, y: 0.0 };
-                let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-                ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-                let vec = ImVec2 { x: 960.0, y: 544.0 };
-                ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-                if ImGui::Begin(
-                    c"##retroachievements".as_ptr() as _,
-                    ptr::null_mut(),
-                    (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as _,
-                ) {
-                    if ra_login_context.logging_in {
-                        if ImGui::BeginPopupModal(
-                            c"retroachievements_login_dialog".as_ptr(),
-                            ptr::null_mut(),
-                            (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                                | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                                | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                                | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
-                                | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
-                        ) {
-                            ImGui::Text(c"Logging in".as_ptr());
-                            ImGui::EndPopup();
-                        }
-
-                        ImGui::OpenPopup(c"retroachievements_login_dialog".as_ptr());
-                    }
-
-                    show_retroachievements_settings(&mut global_settings, &mut ra_login_context, ra_context);
-
-                    if (*ImGui::GetIO()).NavInputs[ImGuiNavInput__ImGuiNavInput_Cancel as usize] != 0f32 {
-                        ra_settings = false;
-                    }
-                }
-
-                ImGui::End();
-            } else if show_global_settings {
-                let vec = ImVec2 { x: 0.0, y: 0.0 };
-                let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-                ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-                let vec = ImVec2 { x: 960.0, y: 544.0 };
-                ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-                if ImGui::Begin(
-                    c"##globalsettings".as_ptr() as _,
-                    ptr::null_mut(),
-                    (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                        | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as _,
-                ) {
-                    let vec = ImVec2 { x: -1f32, y: 0f32 };
-                    if ImGui::Button(c"Custom screen layout".as_ptr() as _, &vec) {
-                        layout_settings = true;
-                    }
-
-                    if ImGui::Button(c"Retroachievements".as_ptr() as _, &vec) {
-                        ra_settings = true;
-                    }
-
-                    if (*ImGui::GetIO()).NavInputs[ImGuiNavInput__ImGuiNavInput_Cancel as usize] != 0f32 {
-                        show_global_settings = false;
-                    }
-                }
-
-                ImGui::End();
-            }
-
+            // Render frame
             let io = ImGui::GetIO();
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
             gl::Viewport(0, 0, (*io).DisplaySize.x as _, (*io).DisplaySize.y as _);
@@ -532,15 +692,199 @@ pub fn show_main_menu(cartridge_path: PathBuf, screen_layouts: &mut ScreenLayout
 
         gl::DeleteTextures(1, &icon_tex);
 
-        let preview = cartridges.remove(SELECTED.unwrap());
+        let sel = detail_game.unwrap();
+        let preview = cartridges.into_iter().nth(sel).unwrap();
         let save_file = saves_path.join(format!("{}.sav", preview.file_name));
-        Some((
-            CartridgeIo::from_preview(preview, save_file).unwrap(),
-            global_settings,
-            settings_configs.remove(SELECTED.unwrap()).settings,
-        ))
+        Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, settings_configs.swap_remove(sel).settings))
     }
 }
+
+// ── Main menu sub-functions ──
+
+unsafe fn load_cartridges(path: &std::path::Path) -> Vec<CartridgePreview> {
+    let mut cartridges: Vec<CartridgePreview> = match fs::read_dir(path) {
+        Ok(rom_dir) => rom_dir
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+            .filter_map(|entry| {
+                let path = entry.path();
+                let name = path.file_name()?.to_str()?;
+                if name.to_lowercase().ends_with(".nds") {
+                    CartridgePreview::new(path).ok()
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    cartridges.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    cartridges
+}
+
+unsafe fn load_icon_texture(tex: u32, cartridge: &CartridgePreview) {
+    gl::BindTexture(gl::TEXTURE_2D, tex);
+    match cartridge.read_icon() {
+        Ok(icon) => gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, 32, 32, gl::RGBA as _, gl::UNSIGNED_BYTE, icon.as_ptr() as _),
+        Err(_) => {
+            const EMPTY: [u32; 32 * 32] = [0u32; 32 * 32];
+            gl::TexSubImage2D(gl::TEXTURE_2D, 0, 0, 0, 32, 32, gl::RGBA as _, gl::UNSIGNED_BYTE, EMPTY.as_ptr() as _);
+        }
+    }
+}
+
+unsafe fn render_menu_bar(cartridges: &[CartridgePreview], cartridge_path: &std::path::Path) {
+    if !ImGui::BeginMainMenuBar() {
+        return;
+    }
+    let text = if cartridges.is_empty() {
+        format!("No roms found in {}", cartridge_path.to_str().unwrap())
+    } else {
+        format!("Found {} roms in {}", cartridges.len(), cartridge_path.to_str().unwrap())
+    };
+    let text = CString::from_str(&text).unwrap();
+    ImGui::Text(text.as_ptr() as _);
+    ImGui::EndMainMenuBar();
+}
+
+unsafe fn render_left_panel(cartridges: &[CartridgePreview], hovered: &mut Option<usize>, show_global_settings: &mut bool, detail_game: &mut Option<usize>, active_tab: &mut usize) {
+    // Sit directly below the main menu bar (its height tracks FramePadding).
+    let top = ImGui::GetFrameHeight();
+    if !begin_window(c"##left", 0.0, top, 700.0, 544.0 - top, PANEL_FLAGS) {
+        ImGui::End();
+        return;
+    }
+    if full_width_button(c"Global settings") {
+        *show_global_settings = true;
+    }
+    if ImGui::IsItemHovered(ImGuiHoveredFlags__ImGuiHoveredFlags_Default as _) {
+        *hovered = None;
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    let child_sz = ImVec2 { x: 0f32, y: 0f32 };
+    if ImGui::BeginChild(c"##gamelist".as_ptr() as _, &child_sz, false, 0) {
+        // Clamp selectable to the available width so long filenames clip
+        // instead of widening the panel (which makes it horizontally scrollable).
+        let sel_width = ImGui::GetContentRegionAvail().x;
+        for (i, cartridge) in cartridges.iter().enumerate() {
+            let name = CString::new(cartridge.file_name.clone()).unwrap();
+            let sel_sz = ImVec2 { x: sel_width, y: 0f32 };
+            if ImGui::Selectable(name.as_ptr() as _, false, 0, &sel_sz) {
+                *detail_game = Some(i);
+                *active_tab = 0;
+            }
+            if ImGui::IsItemHovered(ImGuiHoveredFlags__ImGuiHoveredFlags_Default as _) {
+                *hovered = Some(i);
+            }
+        }
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+
+unsafe fn render_right_panel(cartridges: &[CartridgePreview], icon_tex: u32, hovered: Option<usize>) {
+    let top = ImGui::GetFrameHeight();
+    if !begin_window(c"##right", 700.0, top, 260.0, 544.0 - top, RIGHT_PANEL_FLAGS) {
+        ImGui::End();
+        return;
+    }
+    if let Some(i) = hovered {
+        render_game_preview(&cartridges[i], icon_tex);
+    } else {
+        ImGui::Text(c"Select a game from the list".as_ptr() as _);
+    }
+    ImGui::End();
+}
+
+unsafe fn render_game_detail_overlay(
+    cartridges: &[CartridgePreview],
+    settings_configs: &mut [SettingsConfig],
+    screen_layouts: &ScreenLayouts,
+    icon_tex: u32,
+    detail_game: &mut Option<usize>,
+    active_tab: &mut usize,
+    overlay_focused: &mut bool,
+    active_desc: &mut &'static str,
+    launched: &mut bool,
+) {
+    let Some(i) = *detail_game else {
+        *overlay_focused = true;
+        return;
+    };
+    if !begin_fullscreen_overlay(c"##gamedetail") {
+        ImGui::End();
+        return;
+    }
+    let cartridge = &cartridges[i];
+
+    icon_image(icon_tex);
+    ImGui::SameLine(0.0, 12.0);
+    ImGui::BeginGroup();
+    ImGui::SetWindowFontScale(1.3);
+    match cartridge.read_title() {
+        Ok(title) => {
+            let title = CString::new(title).unwrap();
+            ImGui::Text(title.as_ptr() as _);
+        }
+        Err(_) => ImGui::Text(c"Couldn't read game title".as_ptr() as _),
+    }
+    ImGui::SetWindowFontScale(1.0);
+    ImGui::Spacing();
+    if full_width_button(c"Launch game") {
+        *launched = true;
+    }
+    ImGui::PushTextWrapPos(0f32);
+    ImGui::TextDisabled(c"First launch will take a while. Don't exit or power off your Vita.".as_ptr());
+    ImGui::PopTextWrapPos();
+    ImGui::EndGroup();
+
+    ImGui::Spacing();
+    settings_configs[i].settings.populate_screen_layouts(screen_layouts);
+    // Reserve a row for the Save button below the settings + description footer.
+    render_settings_tabs(&mut settings_configs[i], active_tab, false, ImGui::GetFrameHeightWithSpacing(), active_desc);
+
+    // Pin the Save button to the bottom of the overlay; the description footer
+    // above it has a variable height, so don't let the button float up with it.
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - (*ImGui::GetStyle()).WindowPadding.y - ImGui::GetFrameHeight());
+
+    let settings_config = &mut settings_configs[i];
+    let dirty = settings_config.dirty;
+    if !dirty {
+        ImGui::PushItemFlag(ImGuiItemFlags__ImGuiItemFlags_Disabled as _, true);
+        ImGui::PushStyleVar(ImGuiStyleVar__ImGuiStyleVar_Alpha as _, (*ImGui::GetStyle()).Alpha * 0.5f32);
+    }
+    if full_width_button(c"Save settings") {
+        settings_config.flush();
+    }
+    if !dirty {
+        ImGui::PopItemFlag();
+        ImGui::PopStyleVar(1);
+    }
+
+    // Back/Esc: only leave the menu when at the top level; otherwise imgui has
+    // already stepped out of the settings child or a combo this frame.
+    if back_closes_overlay(*overlay_focused) {
+        *detail_game = None;
+    }
+    *overlay_focused = ImGui::IsWindowFocused(0);
+    ImGui::End();
+}
+
+unsafe fn render_game_preview(cartridge: &CartridgePreview, icon_tex: u32) {
+    icon_image(icon_tex);
+    match cartridge.read_title() {
+        Ok(title) => {
+            let title = CString::new(title).unwrap();
+            ImGui::Text(title.as_ptr() as _);
+        }
+        Err(_) => ImGui::Text(c"Couldn't read game title".as_ptr() as _),
+    }
+}
+
+// ── Pause menu ──
 
 pub enum UiPauseMenuReturn {
     Resume,
@@ -555,6 +899,9 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
     let mut pressed_exit = false;
     let mut return_value = None;
     let mut settings_config = SettingsConfig::from(settings.clone());
+    let mut active_tab: usize = 0;
+    let mut overlay_focused = true;
+    let mut active_desc: &'static str = "";
     loop {
         unsafe {
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
@@ -567,93 +914,79 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
                 return UiPauseMenuReturn::QuitApp;
             }
 
-            if ImGui::BeginPopupModal(
-                c"PausePopup".as_ptr(),
-                ptr::null_mut(),
-                (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
-                    | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
-            ) {
-                let vec = ImVec2 { x: 100.0, y: 50.0 };
-                if ImGui::Button(c"Settings".as_ptr(), &vec) {
-                    pressed_settings = true;
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::SameLine(0.0, 5.0);
-                if ImGui::Button(c"Quit game".as_ptr(), &vec) {
-                    pressed_quit = true;
-                    ImGui::CloseCurrentPopup();
-                }
-                if ImGui::Button(c"Resume".as_ptr(), &vec) {
+            const MODAL_FLAGS: u32 = (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
+                | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
+                | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
+                | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
+                | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as u32;
+
+            center_next_window();
+            if ImGui::BeginPopupModal(c"PausePopup".as_ptr(), ptr::null_mut(), MODAL_FLAGS as _) {
+                dialog_title(c"Paused");
+                const BUTTON_WIDTH: f32 = 260.0;
+                if menu_button(c"Resume", BUTTON_WIDTH) {
                     return_value = Some(UiPauseMenuReturn::Resume);
                     ImGui::CloseCurrentPopup();
                 }
-                ImGui::SameLine(0.0, 5.0);
-                if ImGui::Button(c"Blow mic".as_ptr(), &vec) {
+                if menu_button(c"Settings", BUTTON_WIDTH) {
+                    pressed_settings = true;
+                    active_tab = 0;
+                    overlay_focused = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                if menu_button(c"Blow into mic", BUTTON_WIDTH) {
                     return_value = Some(UiPauseMenuReturn::BlowMic);
                     ImGui::CloseCurrentPopup();
                 }
-                ImGui::SameLine(0.0, 5.0);
-                if ImGui::Button(c"Exit emu".as_ptr(), &vec) {
+                if menu_button(c"Quit game", BUTTON_WIDTH) {
+                    pressed_quit = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                if menu_button(c"Exit emulator", BUTTON_WIDTH) {
                     pressed_exit = true;
                     ImGui::CloseCurrentPopup();
                 }
-
                 ImGui::EndPopup();
             }
 
-            if ImGui::BeginPopupModal(
-                c"QuitPopup".as_ptr(),
-                ptr::null_mut(),
-                (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                    | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
-                    | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
-            ) {
-                let text = c"Exit the game? Unsaved progress will be lost.";
-                let text_width = ImGui::CalcTextSize(text.as_ptr(), ptr::null(), false, 0.0).x;
-                ImGui::Text(text.as_ptr());
-                let vec = ImVec2 { x: text_width / 2.0, y: 50.0 };
-                if ImGui::Button(c"No".as_ptr(), &vec) {
+            center_next_window();
+            if ImGui::BeginPopupModal(c"QuitPopup".as_ptr(), ptr::null_mut(), MODAL_FLAGS as _) {
+                dialog_title(c"Exit game?");
+                centered_text(c"Unsaved progress will be lost.");
+                ImGui::Spacing();
+                ImGui::Spacing();
+
+                const BUTTON_WIDTH: f32 = 120.0;
+                let spacing = (*ImGui::GetStyle()).ItemSpacing.x;
+                let total = BUTTON_WIDTH * 2.0 + spacing;
+                let avail = ImGui::GetContentRegionAvail().x;
+                if avail > total {
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - total) * 0.5);
+                }
+                let bsz = ImVec2 { x: BUTTON_WIDTH, y: 44.0 };
+                if ImGui::Button(c"No".as_ptr(), &bsz) {
                     pressed_quit = false;
                     pressed_exit = false;
                     ImGui::CloseCurrentPopup();
                 }
-                ImGui::SameLine(0.0, 5.0);
-                if ImGui::Button(c"Yes".as_ptr(), &vec) {
+                ImGui::SameLine(0.0, spacing);
+                if ImGui::Button(c"Yes".as_ptr(), &bsz) {
                     return_value = if pressed_exit { Some(UiPauseMenuReturn::QuitApp) } else { Some(UiPauseMenuReturn::Quit) };
                     ImGui::CloseCurrentPopup();
                 }
-
                 ImGui::EndPopup();
             }
 
             if return_value.is_none() {
                 if pressed_settings {
-                    let vec = ImVec2 { x: 0.0, y: 0.0 };
-                    let vec2 = ImVec2 { x: 0.0, y: 0.0 };
-                    ImGui::SetNextWindowPos(&vec, ImGuiCond__ImGuiSetCond_Always as _, &vec2);
-                    let vec = ImVec2 {
-                        x: PRESENTER_SCREEN_WIDTH as f32,
-                        y: PRESENTER_SCREEN_HEIGHT as f32,
-                    };
-                    ImGui::SetNextWindowSize(&vec, ImGuiCond__ImGuiSetCond_Always as _);
-                    if ImGui::Begin(
-                        c"##details".as_ptr() as _,
-                        ptr::null_mut(),
-                        (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
-                            | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
-                            | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
-                            | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as _,
-                    ) {
-                        show_settings(&mut settings_config, true);
-
-                        if (*ImGui::GetIO()).NavInputs[ImGuiNavInput__ImGuiNavInput_Cancel as usize] != 0f32 {
+                    if begin_fullscreen_overlay(c"##details") {
+                        render_settings_tabs(&mut settings_config, &mut active_tab, true, 0f32, &mut active_desc);
+                        // Back/Esc steps out of the settings child first; only
+                        // closes the settings menu when at the tab level.
+                        if back_closes_overlay(overlay_focused) {
                             pressed_settings = false;
                         }
+                        overlay_focused = ImGui::IsWindowFocused(0);
                     }
                     ImGui::End();
                 } else if pressed_quit || pressed_exit {
@@ -664,19 +997,20 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
             }
 
             ImGui::Render();
-
             ui_backend.render_draw_data(ImGui::GetDrawData());
             ui_backend.swap_window();
 
-            if let Some(return_value) = return_value {
+            if let Some(ret) = return_value {
                 if settings_config.dirty {
                     *settings = settings_config.settings;
                 }
-                return return_value;
+                return ret;
             }
         }
     }
 }
+
+// ── Progress dialog ──
 
 pub fn show_progress(ui_backend: &mut impl UiBackend, current_name: impl AsRef<str>, progress: usize, total: usize) {
     unsafe {
@@ -687,6 +1021,7 @@ pub fn show_progress(ui_backend: &mut impl UiBackend, current_name: impl AsRef<s
 
         ui_backend.new_frame();
 
+        center_next_window();
         if ImGui::BeginPopupModal(
             c"ProgressPopup".as_ptr(),
             ptr::null_mut(),
@@ -696,19 +1031,25 @@ pub fn show_progress(ui_backend: &mut impl UiBackend, current_name: impl AsRef<s
                 | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
                 | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
         ) {
-            ImGui::Text(c"If you are stuck here, make sure you have\nkubridge version 0.3.1 installed!".as_ptr());
+            dialog_title(c"Loading");
+            centered_text(c"If you are stuck here, make sure you have");
+            centered_text(c"kubridge version 0.3.1 installed!");
+            ImGui::Spacing();
             let text = CString::from_str(current_name.as_ref()).unwrap();
-            ImGui::Text(text.as_ptr());
-            let vec = ImVec2 { x: 400.0, y: 45.0 };
-            ImGui::ProgressBar(progress as f32 / total as f32, &vec, ptr::null());
-
+            centered_text(&text);
+            ImGui::Spacing();
+            const BAR_WIDTH: f32 = 440.0;
+            let avail = ImGui::GetContentRegionAvail().x;
+            if avail > BAR_WIDTH {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - BAR_WIDTH) * 0.5);
+            }
+            let sz = ImVec2 { x: BAR_WIDTH, y: 28.0 };
+            ImGui::ProgressBar(progress as f32 / total as f32, &sz, ptr::null());
             ImGui::EndPopup();
         }
-
         ImGui::OpenPopup(c"ProgressPopup".as_ptr());
 
         ImGui::Render();
-
         ui_backend.render_draw_data(ImGui::GetDrawData());
         ui_backend.swap_window();
     }
