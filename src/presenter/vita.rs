@@ -4,8 +4,8 @@ use crate::core::input::Keycode;
 use crate::global_settings::GlobalSettings;
 use crate::logging::info_println;
 use crate::presenter::imgui::root::{
-    ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGuiStyleVar__ImGuiStyleVar_ItemSpacing, ImGuiStyleVar__ImGuiStyleVar_WindowRounding, ImGui_ImplVitaGL_GamepadUsage, ImGui_ImplVitaGL_Init,
-    ImGui_ImplVitaGL_MouseStickUsage, ImGui_ImplVitaGL_NewFrame, ImGui_ImplVitaGL_RenderDrawData, ImGui_ImplVitaGL_TouchUsage, ImVec2,
+    ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGui_ImplVitaGL_GamepadUsage, ImGui_ImplVitaGL_Init, ImGui_ImplVitaGL_MouseStickUsage, ImGui_ImplVitaGL_NewFrame, ImGui_ImplVitaGL_RenderDrawData,
+    ImGui_ImplVitaGL_TouchUsage, ImVec2,
 };
 use crate::presenter::ui::{draw_layout_preview, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
 use crate::presenter::{
@@ -61,6 +61,16 @@ const KEY_CODE_MAPPING: [(SceCtrlButtons, Keycode); 12] = [
     (SCE_CTRL_LTRIGGER, Keycode::TriggerL),
     (SCE_CTRL_RTRIGGER, Keycode::TriggerR),
 ];
+
+const BUTTONS_TO_SAMPLE: SceCtrlButtons = {
+    let mut mask = 0;
+    let mut i = 0;
+    while i < KEY_CODE_MAPPING.len() {
+        mask |= KEY_CODE_MAPPING[i].0;
+        i += 1;
+    }
+    mask
+} | SCE_CTRL_PSBUTTON;
 
 #[derive(Clone)]
 pub struct PresenterAudioOut {
@@ -200,6 +210,7 @@ impl Presenter {
             let pressed = MaybeUninit::<SceCtrlData>::uninit();
             let mut pressed = pressed.assume_init();
             sceCtrlPeekBufferPositive(0, &mut pressed, 1);
+            pressed.buttons &= BUTTONS_TO_SAMPLE;
 
             let mut previous_pressed_btn = self.pressed_btn;
             self.pressed_btn = pressed.buttons;
