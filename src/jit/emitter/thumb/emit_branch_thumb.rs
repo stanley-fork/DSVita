@@ -38,7 +38,7 @@ impl JitAsm<'_> {
 
         block_asm.save_dirty_guest_regs_additional(true, inst.cond == Cond::AL, reg_reserve!(Reg::LR, Reg::PC));
 
-        self.emit_branch_external_label(inst_index, basic_block_index, target_pc, true, block_asm);
+        self.emit_branch_external_label(inst_index, basic_block_index, target_pc, true, target_pc & 1 == 0, block_asm);
     }
 
     pub fn emit_b_thumb(&mut self, inst_index: usize, basic_block_index: usize, skip_label: &mut Label, block_asm: &mut BlockAsm) {

@@ -544,7 +544,7 @@ fn emit_code_block_internal(asm: &mut JitAsm, guest_pc: u32, thumb: bool) {
             let next_pc = guest_pc_end + if thumb { 3 } else { 4 };
             block_asm.ldr2(Reg::R0, next_pc);
             block_asm.store_guest_reg(Reg::R0, Reg::PC);
-            asm.emit_branch_external_label(asm.jit_buf.insts.len() - 1, asm.analyzer.basic_blocks.len() - 1, next_pc, false, &mut block_asm);
+            asm.emit_branch_external_label(asm.jit_buf.insts.len() - 1, asm.analyzer.basic_blocks.len() - 1, next_pc, false, false, &mut block_asm);
         }
 
         asm.emit_epilogue(&mut block_asm);

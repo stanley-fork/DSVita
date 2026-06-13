@@ -43,8 +43,10 @@ impl JitAsm<'_> {
         block_asm.store_guest_reg(Reg::R0, Reg::CPSR);
     }
 
-    fn emit_call_jit_addr_imm(&mut self, target_pc: u32, has_return: bool, block_asm: &mut BlockAsm) {
-        self.emit_set_cpsr_thumb_bit_imm(target_pc & 1 == 1, block_asm);
+    fn emit_call_jit_addr_imm(&mut self, target_pc: u32, has_return: bool, set_thumb_bit: bool, block_asm: &mut BlockAsm) {
+        if set_thumb_bit {
+            self.emit_set_cpsr_thumb_bit_imm(target_pc & 1 == 1, block_asm);
+        }
 
         let jit_entry_addr = self.emu.jit.jit_memory_map.get_jit_entry(target_pc);
         block_asm.ldr2(Reg::R0, target_pc);
@@ -57,7 +59,7 @@ impl JitAsm<'_> {
         }
     }
 
-    pub fn emit_call_branch_imm(&mut self, inst_index: usize, target_pc: u32, has_return: bool, block_asm: &mut BlockAsm) {
+    pub fn emit_call_branch_imm(&mut self, inst_index: usize, target_pc: u32, has_return: bool, set_thumb_bit: bool, block_asm: &mut BlockAsm) {
         block_asm.ldr2(Reg::R0, self as *mut _ as u32);
         block_asm.mov4(FlagsUpdate_DontCare, Cond::AL, Reg::R1, &self.jit_buf.insts_cycle_counts[inst_index].into());
         if has_return {
@@ -86,7 +88,7 @@ impl JitAsm<'_> {
         if !has_return {
             block_asm.restore_stack();
         }
-        self.emit_call_jit_addr_imm(target_pc, has_return, block_asm);
+        self.emit_call_jit_addr_imm(target_pc, has_return, set_thumb_bit, block_asm);
     }
 
     pub fn emit_call_branch_reg(&mut self, inst_index: usize, target_pc_reg: Reg, has_return: bool, block_asm: &mut BlockAsm) {
@@ -121,9 +123,9 @@ impl JitAsm<'_> {
         }
     }
 
-    pub fn emit_branch_external_label(&mut self, inst_index: usize, basic_block_index: usize, target_pc: u32, has_return: bool, block_asm: &mut BlockAsm) {
+    pub fn emit_branch_external_label(&mut self, inst_index: usize, basic_block_index: usize, target_pc: u32, has_return: bool, set_thumb_bit: bool, block_asm: &mut BlockAsm) {
         if has_return {
-            self.emit_call_branch_imm(inst_index, target_pc, true, block_asm);
+            self.emit_call_branch_imm(inst_index, target_pc, true, set_thumb_bit, block_asm);
             block_asm.ldr2(Reg::R1, ptr::addr_of_mut!(self.runtime_data) as u32);
 
             if inst_index == self.jit_buf.insts.len() - 1 {
@@ -133,7 +135,7 @@ impl JitAsm<'_> {
                 block_asm.restore_guest_regs_ptr();
                 block_asm.restore_stack();
                 let lr = if block_asm.thumb { block_asm.current_pc + 3 } else { block_asm.current_pc + 4 };
-                self.emit_call_jit_addr_imm(lr, false, block_asm);
+                self.emit_call_jit_addr_imm(lr, false, false, block_asm);
                 return;
             }
 
@@ -148,7 +150,7 @@ impl JitAsm<'_> {
 
             block_asm.reload_active_guest_regs_all();
         } else {
-            self.emit_call_branch_imm(inst_index, target_pc, false, block_asm);
+            self.emit_call_branch_imm(inst_index, target_pc, false, set_thumb_bit, block_asm);
         }
     }
 
@@ -164,7 +166,7 @@ impl JitAsm<'_> {
                 block_asm.restore_guest_regs_ptr();
                 block_asm.restore_stack();
                 let lr = if block_asm.thumb { block_asm.current_pc + 3 } else { block_asm.current_pc + 4 };
-                self.emit_call_jit_addr_imm(lr, false, block_asm);
+                self.emit_call_jit_addr_imm(lr, false, false, block_asm);
                 return;
             }
 
@@ -262,7 +264,7 @@ impl JitAsm<'_> {
                 }
             }
         } else if metadata.external_branch() {
-            self.emit_branch_external_label(inst_index, basic_block_index, target_pc, false, block_asm);
+            self.emit_branch_external_label(inst_index, basic_block_index, target_pc, false, false, block_asm);
         } else {
             if target_pc > block_asm.current_pc {
                 let mut label = Label::new();
@@ -502,7 +504,7 @@ impl JitAsm<'_> {
         block_asm.ldr2(lr_reg, pc + 4);
         block_asm.save_dirty_guest_regs_additional(true, inst.cond == Cond::AL, reg_reserve!(Reg::LR, Reg::PC));
 
-        self.emit_branch_external_label(inst_index, basic_block_index, target_pc, true, block_asm);
+        self.emit_branch_external_label(inst_index, basic_block_index, target_pc, true, false, block_asm);
     }
 
     pub fn emit_b(&mut self, inst_index: usize, basic_block_index: usize, skip_label: &mut Label, block_asm: &mut BlockAsm) {
@@ -546,6 +548,6 @@ impl JitAsm<'_> {
         block_asm.ldr2(lr_reg, pc + 4);
         block_asm.save_dirty_guest_regs_additional(true, inst.cond == Cond::AL, reg_reserve!(Reg::LR, Reg::PC));
 
-        self.emit_branch_external_label(inst_index, basic_block_index, target_pc | 1, true, block_asm);
+        self.emit_branch_external_label(inst_index, basic_block_index, target_pc | 1, true, true, block_asm);
     }
 }
