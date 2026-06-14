@@ -4,31 +4,25 @@ use crate::global_settings::GlobalSettings;
 use crate::key_bindings::KeyBinding;
 use crate::presenter::imgui::root::{
     ImDrawData, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF, ImFontAtlas_GetGlyphRangesDefault,
-    ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCond__ImGuiSetCond_Always, ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled,
-    ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha, ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar, ImVec2, ImVec4,
+    ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCol__ImGuiCol_Text, ImGuiCond__ImGuiSetCond_Always, ImGuiHoveredFlags__ImGuiHoveredFlags_Default,
+    ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha, ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar, ImVec2, ImVec4,
 };
-use crate::presenter::{default_key_binding, show_controls_create_settings, show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
+use crate::presenter::{cjk_font, default_key_binding, show_controls_create_settings, show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
 use crate::settings::{SettingValue, Settings, SettingsConfig, SETTING_GROUPS};
 use std::ffi::CString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::{fs, mem, ptr};
-
-// ── UI Backend trait ──
-
 pub trait UiBackend {
     fn init(&mut self);
     fn new_frame(&mut self) -> bool;
     fn render_draw_data(&mut self, draw_data: *mut ImDrawData);
     fn swap_window(&mut self);
 }
-
-// ── Window helpers ──
-
 const OVERLAY_FLAGS: u32 =
     (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags__ImGuiWindowFlags_NoResize | ImGuiWindowFlags__ImGuiWindowFlags_NoMove | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as u32;
 
@@ -155,9 +149,6 @@ unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab:
 unsafe fn back_closes_overlay(prev_overlay_focused: bool) -> bool {
     cancel_pressed() && prev_overlay_focused
 }
-
-// ── Styling & shared dialog helpers ──
-
 /// One-time global style tweaks for a cleaner, more rounded look.
 unsafe fn setup_style() {
     let style = &mut *ImGui::GetStyle();
@@ -219,7 +210,7 @@ unsafe fn center_next_window() {
 /// Draws a scaled preview of the presenter screen with the two DS screens
 /// positioned/sized/rotated exactly as the layout would render them. Reserves
 /// the canvas area via a Dummy so surrounding layout flows normally.
-pub(crate) unsafe fn draw_layout_preview(custom_layout: &crate::screen_layouts::CustomLayout) {
+pub(crate) unsafe fn draw_layout_preview(custom_layout: &CustomLayout) {
     let dl = ImGui::GetWindowDrawList();
     let origin = ImGui::GetCursorScreenPos();
     let avail = ImGui::GetContentRegionAvail();
@@ -295,9 +286,6 @@ unsafe fn back_hint() {
     }
     ImGui::TextDisabled(text.as_ptr() as _);
 }
-
-// ── Font initialization ──
-
 pub fn init_ui(ui_backend: &mut impl UiBackend) {
     unsafe {
         ImGui::CreateContext(ptr::null_mut());
@@ -319,9 +307,6 @@ pub fn init_ui(ui_backend: &mut impl UiBackend) {
         );
     }
 }
-
-// ── Setting rendering ──
-
 /// Renders one setting row (title + control). Returns true if the control is
 /// currently focused or hovered, so the caller can surface its description.
 unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirty: &mut bool, buttons_width: f32) -> bool {
@@ -397,10 +382,16 @@ unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, tab: usize, 
     }
     active_desc
 }
-
-// ── Sub-overlay rendering ──
-
-unsafe fn render_global_settings_overlay(show: &mut bool, layout_settings: &mut bool, controls_settings: &mut bool, ra_settings: &mut bool, overlay_focused: &mut bool) {
+unsafe fn render_global_settings_overlay(
+    show: &mut bool,
+    layout_settings: &mut bool,
+    controls_settings: &mut bool,
+    ra_settings: &mut bool,
+    cjk_font_path: &Path,
+    cjk_download: &cjk_font::Download,
+    cjk_applied: bool,
+    overlay_focused: &mut bool,
+) {
     if !*show {
         *overlay_focused = true;
         return;
@@ -420,6 +411,30 @@ unsafe fn render_global_settings_overlay(show: &mut bool, layout_settings: &mut 
     }
     if menu_button(c"RetroAchievements", BUTTON_WIDTH) {
         *ra_settings = true;
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    let (done, downloading, error) = cjk_download.snapshot();
+    if cjk_applied {
+        centered_text(c"Chinese font installed.");
+    } else if downloading {
+        centered_text(c"Downloading Chinese font...");
+    } else if done {
+        centered_text(c"Chinese font downloaded. Restart to apply.");
+    } else {
+        centered_text(c"Download a font to show Chinese game names.");
+        if menu_button(c"Download Chinese font", BUTTON_WIDTH) {
+            cjk_download.start(cjk_font_path.to_path_buf());
+        }
+    }
+    if !error.is_empty() {
+        ImGui::PushStyleColor(ImGuiCol__ImGuiCol_Text as _, 0xFF0000FFu32);
+        if let Ok(error) = CString::new(error) {
+            centered_text(&error);
+        }
+        ImGui::PopStyleColor(1);
     }
 
     back_hint();
@@ -673,9 +688,6 @@ unsafe fn render_ra_settings_overlay(show: &mut bool, global_settings: &mut Glob
     *overlay_focused = ImGui::IsWindowFocused(0);
     ImGui::End();
 }
-
-// ── Context structs ──
-
 #[derive(Default)]
 pub struct CustomLayoutContext {
     pub parse_error: bool,
@@ -690,9 +702,6 @@ pub struct RALoginContext {
     pub error: String,
     pub logging_in: bool,
 }
-
-// ── Main menu ──
-
 pub fn show_main_menu(
     cartridge_path: PathBuf,
     screen_layouts: &mut ScreenLayouts,
@@ -716,7 +725,6 @@ pub fn show_main_menu(
         let cartridges = load_cartridges(&cartridge_path);
         let mut settings_configs: Vec<SettingsConfig> = cartridges.iter().map(|c| SettingsConfig::new(settings_path.join(format!("{}.ini", c.file_name)))).collect();
 
-        // State
         let mut show_global_settings = false;
         let mut hovered: Option<usize> = None;
         let mut detail_game: Option<usize> = None;
@@ -747,7 +755,17 @@ pub fn show_main_menu(
         let mut ra_settings_focused = true;
         let mut ra_login_context = RALoginContext::default();
 
-        // Game icon texture
+        // Optional Chinese font: load it over only the glyphs the game names use,
+        // before the first frame builds the atlas. `cjk_applied` is false when a
+        // font was only just downloaded (it applies on the next launch).
+        let cjk_path = cjk_font::font_path(&cartridge_path);
+        let cjk_download = cjk_font::Download::new(&cjk_path);
+        let cjk_applied = cjk_font::load_once(&cjk_path, || {
+            let mut texts: Vec<String> = cartridges.iter().map(|c| c.file_name.clone()).collect();
+            texts.extend(cartridges.iter().filter_map(|c| c.read_title().ok()));
+            texts
+        });
+
         let mut icon_tex = 0;
         gl::GenTextures(1, &mut icon_tex);
         gl::BindTexture(gl::TEXTURE_2D, icon_tex);
@@ -760,21 +778,16 @@ pub fn show_main_menu(
                 return None;
             }
 
-            // Update icon texture
             if let Some(i) = detail_game.or(hovered) {
                 load_icon_texture(icon_tex, &cartridges[i]);
             }
 
-            // Menu bar
             render_menu_bar(&cartridges, &cartridge_path);
 
-            // Left panel: game list
             render_left_panel(&cartridges, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
 
-            // Right panel: game preview
             render_right_panel(&cartridges, icon_tex, hovered);
 
-            // Game detail menu (tabbed settings)
             render_game_detail_overlay(
                 &cartridges,
                 &mut settings_configs,
@@ -788,8 +801,16 @@ pub fn show_main_menu(
                 &mut launched,
             );
 
-            // Sub-overlays
-            render_global_settings_overlay(&mut show_global_settings, &mut layout_settings, &mut controls_settings, &mut ra_settings, &mut global_settings_focused);
+            render_global_settings_overlay(
+                &mut show_global_settings,
+                &mut layout_settings,
+                &mut controls_settings,
+                &mut ra_settings,
+                &cjk_path,
+                &cjk_download,
+                cjk_applied,
+                &mut global_settings_focused,
+            );
             render_layout_settings_overlay(
                 &mut layout_settings,
                 &mut global_settings,
@@ -826,7 +847,6 @@ pub fn show_main_menu(
             );
             render_ra_settings_overlay(&mut ra_settings, &mut global_settings, ra_context, &mut ra_login_context, &mut ra_settings_focused);
 
-            // Render frame
             let io = ImGui::GetIO();
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
             gl::Viewport(0, 0, (*io).DisplaySize.x as _, (*io).DisplaySize.y as _);
@@ -846,9 +866,6 @@ pub fn show_main_menu(
         Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, settings_configs.swap_remove(sel).settings))
     }
 }
-
-// ── Main menu sub-functions ──
-
 unsafe fn load_cartridges(path: &std::path::Path) -> Vec<CartridgePreview> {
     let mut cartridges: Vec<CartridgePreview> = match fs::read_dir(path) {
         Ok(rom_dir) => rom_dir
@@ -993,7 +1010,6 @@ unsafe fn render_game_detail_overlay(
     ImGui::Spacing();
     settings_configs[i].settings.populate_screen_layouts(screen_layouts);
     settings_configs[i].settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
-    // Reserve a row for the Save button below the settings + description footer.
     render_settings_tabs(&mut settings_configs[i], active_tab, false, ImGui::GetFrameHeightWithSpacing(), active_desc);
 
     // Pin the Save button to the bottom of the overlay; the description footer
@@ -1033,9 +1049,6 @@ unsafe fn render_game_preview(cartridge: &CartridgePreview, icon_tex: u32) {
         Err(_) => ImGui::Text(c"Couldn't read game title".as_ptr() as _),
     }
 }
-
-// ── Pause menu ──
-
 #[derive(Eq, PartialEq)]
 pub enum UiPauseMenuReturn {
     Resume,
@@ -1160,9 +1173,6 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
         }
     }
 }
-
-// ── Progress dialog ──
-
 pub fn show_progress(ui_backend: &mut impl UiBackend, current_name: impl AsRef<str>, progress: usize, total: usize) {
     unsafe {
         gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
