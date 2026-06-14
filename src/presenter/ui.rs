@@ -16,7 +16,7 @@ use crate::screen_layouts::{CustomLayout, ScreenLayouts};
 use crate::screen_overlays;
 use crate::settings::{SettingValue, Settings, SettingsConfig, SETTING_GROUPS};
 use std::ffi::CString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::{fs, mem, ptr};
 pub trait UiBackend {
@@ -229,6 +229,19 @@ struct OverlayPreviewInfo {
 pub(crate) fn set_overlays_dir(dir: PathBuf) {
     unsafe {
         *(&raw mut OVERLAYS_DIR) = Some(dir);
+    }
+}
+
+/// Best-effort absolute form of `path` for showing the user where to drop a
+/// file. Canonicalizes the parent dir (the file itself may not exist yet),
+/// falling back to the raw path.
+fn abs_path_display(path: &Path) -> String {
+    match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) => match fs::canonicalize(dir) {
+            Ok(abs) => abs.join(name).display().to_string(),
+            Err(_) => path.display().to_string(),
+        },
+        _ => path.display().to_string(),
     }
 }
 
@@ -559,15 +572,26 @@ unsafe fn render_global_settings_overlay(
                 if menu_button(c"Download Chinese font", BUTTON_WIDTH) {
                     cjk_download.start();
                 }
+                // Manual fallback for when the automatic download is blocked
+                // (e.g. Gitee refusing anonymous hot-links).
+                ImGui::Spacing();
+                let hint = CString::new(format!("If the download fails, put wqy-microhei.ttc here manually:\n{}", abs_path_display(&cjk_download.path))).unwrap();
+                ImGui::PushTextWrapPos(0.0);
+                ImGui::TextDisabled(hint.as_ptr());
+                ImGui::PopTextWrapPos();
             }
         }
         Some((current_len, total_len)) => {
-            let text = if total_len == 0 {
-                format!("Downloading Chinese font... ({}kb)", current_len / 1024)
-            } else {
-                format!("Downloading Chinese font... ({}%%)", current_len * 100 / total_len)
-            };
-            centered_text(CString::from_str(&text).unwrap().as_c_str());
+            centered_text(c"Downloading Chinese font...");
+            ImGui::Spacing();
+            let fraction = if total_len == 0 { 0.0 } else { current_len as f32 / total_len as f32 };
+            let overlay = CString::new(format!("{} KB", current_len / 1024)).unwrap();
+            let avail = ImGui::GetContentRegionAvail().x;
+            if avail > BUTTON_WIDTH {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - BUTTON_WIDTH) * 0.5);
+            }
+            let sz = ImVec2 { x: BUTTON_WIDTH, y: 0.0 };
+            ImGui::ProgressBar(fraction, &sz, overlay.as_ptr());
         }
     }
     if !error.is_empty() {

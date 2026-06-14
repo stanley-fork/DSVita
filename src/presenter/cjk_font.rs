@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{fs, mem, thread};
 
-const FONT_FILE: &str = "NotoSansCJKsc-Regular.otf";
-const FONT_URL: &str = "https://raw.githubusercontent.com/notofonts/noto-cjk/refs/heads/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf";
+const FONT_FILE: &str = "wqy-microhei.ttc";
+const FONT_URL: &str = "https://gitee.com/leihtg/RL-Stock/raw/master/font/wqy-microhei.ttc";
+const FONT_SIZE: usize = 5177387;
 
 /// Where the font lives, under the cartridge root.
 pub fn font_path(cartridge_path: &Path) -> PathBuf {
@@ -148,7 +149,7 @@ fn download(path: &Path, state: &Arc<Mutex<DownloadState>>) -> Result<(), String
         return Err(format!("Server returned status {}", response.status().as_u16()));
     }
 
-    let total_length = response.content_length().unwrap_or(0) as usize;
+    let total_length = response.content_length().unwrap_or(FONT_SIZE as _) as usize;
     state.lock().unwrap().progress = Some((0, total_length));
     let mut all_bytes = Vec::new();
     let mut buf = [0; 2048];
@@ -165,10 +166,11 @@ fn download(path: &Path, state: &Arc<Mutex<DownloadState>>) -> Result<(), String
         }
     }
 
-    // Reject HTML error/redirect pages — a real font starts with a known magic.
+    // Reject HTML error/redirect pages (e.g. a Gitee hot-link block) — a real
+    // font starts with a known magic. The user can place the file manually then.
     let is_font = all_bytes.len() > 4 && matches!(&all_bytes[..4], b"OTTO" | b"true" | b"ttcf" | [0x00, 0x01, 0x00, 0x00]);
     if !is_font {
-        return Err("Downloaded file is not a valid font".to_string());
+        return Err("Download failed. Place the font manually (see below).".to_string());
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create font dir: {e}"))?;
