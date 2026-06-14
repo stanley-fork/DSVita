@@ -6,6 +6,7 @@ use ini::{Properties, SectionSetter};
 use nalgebra::{Matrix3, Vector2, Vector3};
 use std::f32::consts::PI;
 use std::ffi::CString;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 fn get_predefined_layouts() -> Vec<(&'static str, [[f32; 9]; 4], f32)> {
@@ -152,6 +153,7 @@ fn get_predefined_layouts() -> Vec<(&'static str, [[f32; 9]; 4], f32)> {
 pub struct ScreenLayouts {
     predefined: Vec<(&'static str, [[f32; 9]; 4], f32)>,
     custom: Vec<CustomLayout>,
+    overlays_dir: PathBuf,
 }
 
 impl ScreenLayouts {
@@ -159,11 +161,25 @@ impl ScreenLayouts {
         ScreenLayouts {
             predefined: get_predefined_layouts(),
             custom: Vec::new(),
+            overlays_dir: PathBuf::new(),
         }
     }
 
     pub fn populate_custom_layouts(&mut self, custom_layouts: &[CustomLayout]) {
         self.custom = custom_layouts.to_vec();
+    }
+
+    pub fn set_overlays_dir(&mut self, dir: PathBuf) {
+        self.overlays_dir = dir;
+    }
+
+    /// Resolved path of the layout's overlay PNG, if it has one.
+    fn overlay_path(&self, index: usize) -> Option<PathBuf> {
+        let predefined = self.predefined.len();
+        if index < predefined {
+            return None;
+        }
+        self.custom[index - predefined].overlay.as_ref().map(|name| self.overlays_dir.join(name))
     }
 
     fn convert_custom_layout(&self, index: usize) -> [[f32; 9]; 4] {
@@ -234,6 +250,7 @@ pub struct ScreenLayout {
     bottom_scale_index: usize,
     overlap: bool,
     pub wide_screen_coefficient: f32,
+    pub overlay_path: Option<PathBuf>,
     screen_top: [f32; 16],
     screen_bottom: [f32; 16],
     bottom_inverse_mtx: [f32; 9],
@@ -311,6 +328,7 @@ impl ScreenLayout {
             bottom_scale_index,
             overlap,
             wide_screen_coefficient: screen_layouts.wide_screen_coefficient(index),
+            overlay_path: screen_layouts.overlay_path(index),
             screen_top: [
                 screen_top[0][0],
                 screen_top[0][1],
@@ -391,6 +409,9 @@ pub struct CustomLayout {
     pub pos: [(u16, u16); 2],
     pub rotation: [u16; 2],
     pub wide_screen_coefficient: f32,
+    /// File name (under the overlays dir) of an optional full-screen PNG drawn
+    /// behind the two screens. `None` = no overlay.
+    pub overlay: Option<String>,
 }
 
 impl CustomLayout {
@@ -550,6 +571,7 @@ impl CustomLayout {
                 props.get("rot_bottom").unwrap_or("0").parse::<u16>().unwrap_or(0),
             ],
             wide_screen_coefficient: props.get("wide_screen_coefficient").unwrap_or("1.0").parse::<f32>().unwrap_or(1.0),
+            overlay: props.get("overlay").filter(|s| !s.is_empty()).map(str::to_string),
         }
     }
 
@@ -565,6 +587,7 @@ impl CustomLayout {
         section_setter.set("rot_top", self.rotation[0].to_string());
         section_setter.set("rot_bottom", self.rotation[1].to_string());
         section_setter.set("wide_screen_coefficient", self.wide_screen_coefficient.to_string());
+        section_setter.set("overlay", self.overlay.as_deref().unwrap_or(""));
     }
 }
 
@@ -576,6 +599,7 @@ impl Default for CustomLayout {
             pos: [(0, 0), (DISPLAY_WIDTH as u16, 0)],
             rotation: [0; 2],
             wide_screen_coefficient: 1.0,
+            overlay: None,
         }
     }
 }

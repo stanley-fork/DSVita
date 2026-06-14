@@ -16,6 +16,7 @@ use crate::logging::info_println;
 use crate::presenter::{Presenter, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::ScreenLayout;
+use crate::screen_overlays;
 use crate::settings::Settings;
 use crate::utils::HeapArrayU8;
 use gl::types::{GLint, GLuint};
@@ -23,6 +24,7 @@ use glyph_brush::{HorizontalAlign, Layout, VerticalAlign};
 use png::{BitDepth, ColorType};
 use std::intrinsics::unlikely;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -67,6 +69,11 @@ pub struct GpuRenderer {
     ra_alpha_loc: GLint,
     ra_last_event_instant: Instant,
     ra_badge_texture: Option<GLuint>,
+
+    overlay_program: GLuint,
+    // Cached overlay: the resolved PNG path it was loaded from + its GL texture.
+    // Reloaded when the active layout selects a different (valid) overlay.
+    overlay_texture: Option<(PathBuf, GLuint)>,
 
     gl_glyph: GlGlyph,
     final_fbo: GpuFbo,
@@ -152,6 +159,14 @@ impl GpuRenderer {
             alpha_loc
         };
 
+        unsafe {
+            gl::UseProgram(gpu_programs.overlay);
+            gl::BindAttribLocation(gpu_programs.overlay, 0, c"position".as_ptr() as _);
+            gl::BindAttribLocation(gpu_programs.overlay, 1, c"texCoordsColor".as_ptr() as _);
+            gl::Uniform1i(gl::GetUniformLocation(gpu_programs.overlay, c"tex".as_ptr() as _), 0);
+            gl::UseProgram(0);
+        }
+
         GpuRenderer {
             renderer_regs_2d_shared: Gpu2DRenderRegsShared::new(),
             renderer_2d: Gpu2DRenderer::new(gpu_programs),
@@ -174,6 +189,9 @@ impl GpuRenderer {
             ra_alpha_loc,
             ra_last_event_instant: Instant::now(),
             ra_badge_texture: None,
+
+            overlay_program: gpu_programs.overlay,
+            overlay_texture: None,
 
             gl_glyph: GlGlyph::new(gpu_programs),
             final_fbo: GpuFbo::new(PRESENTER_SCREEN_WIDTH as _, PRESENTER_SCREEN_HEIGHT as _, false, false).unwrap(),
@@ -311,6 +329,77 @@ impl GpuRenderer {
         gl::UseProgram(0);
     }
 
+    #[inline(never)]
+    unsafe fn draw_overlay(&mut self, screen_layout: &ScreenLayout) {
+        let path = screen_layout.overlay_path.as_ref().unwrap();
+
+        let stale = self.overlay_texture.as_ref().map(|(cached, _)| cached != path).unwrap_or(true);
+        if stale {
+            if let Some((_, tex)) = self.overlay_texture.take() {
+                gl::DeleteTextures(1, &tex);
+            }
+            if let Some(overlay) = screen_overlays::load(path) {
+                let mut tex = 0;
+                gl::GenTextures(1, &mut tex);
+                gl::BindTexture(gl::TEXTURE_2D, tex);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as _);
+                gl::TexImage2D(
+                    gl::TEXTURE_2D,
+                    0,
+                    gl::RGBA as _,
+                    overlay.width as _,
+                    overlay.height as _,
+                    0,
+                    gl::RGBA,
+                    gl::UNSIGNED_BYTE,
+                    overlay.data.as_ptr() as _,
+                );
+                gl::BindTexture(gl::TEXTURE_2D, 0);
+                self.overlay_texture = Some((path.clone(), tex));
+            }
+        }
+
+        let Some((_, tex)) = self.overlay_texture.as_ref() else {
+            return;
+        };
+
+        gl::UseProgram(self.overlay_program);
+        gl::Enable(gl::BLEND);
+        gl::BlendEquation(gl::FUNC_ADD);
+        gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        gl::ActiveTexture(gl::TEXTURE0);
+        gl::BindTexture(gl::TEXTURE_2D, *tex);
+
+        #[rustfmt::skip]
+        const POSITION: [f32; 4 * 2] = [
+            -1.0,  1.0,
+             1.0,  1.0,
+             1.0, -1.0,
+            -1.0, -1.0,
+        ];
+        // texFactor (third component) is unused by overlay_frag; only the ra
+        // vertex shader's xy texCoords matter.
+        #[rustfmt::skip]
+        const TEX_COORDS: [f32; 4 * 3] = [
+            0.0, 0.0, 0.0,
+            1.0, 0.0, 0.0,
+            1.0, 1.0, 0.0,
+            0.0, 1.0, 0.0,
+        ];
+        gl::EnableVertexAttribArray(0);
+        gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 0, POSITION.as_ptr() as _);
+        gl::EnableVertexAttribArray(1);
+        gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, 0, TEX_COORDS.as_ptr() as _);
+        gl::DrawArrays(gl::TRIANGLE_FAN, 0, 4);
+
+        gl::BindTexture(gl::TEXTURE_2D, 0);
+        gl::Disable(gl::BLEND);
+        gl::UseProgram(0);
+    }
+
     pub fn render_loop(
         &mut self,
         presenter: &mut Presenter,
@@ -435,6 +524,10 @@ impl GpuRenderer {
             gl::ClearColor(0.0, 0.0, 0.0, 0.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
 
+            if screen_layout.overlay_path.is_some() {
+                self.draw_overlay(screen_layout);
+            }
+
             if self.common.pow_cnt1[0].enable() {
                 let top_screen = if self.common.pow_cnt1[0].display_swap() {
                     screen_layout.get_screen_top()
@@ -499,7 +592,7 @@ impl GpuRenderer {
                 );
             }
 
-            if settings.retroachievements() {
+            if unlikely(settings.retroachievements()) {
                 let ra_event = ra_context.event.lock().unwrap();
                 let (event, instant) = ra_event.deref();
                 let elapsed = instant.elapsed();

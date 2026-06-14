@@ -8,7 +8,7 @@ use crate::presenter::imgui::root::{
     ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGuiConfigFlags__ImGuiConfigFlags_NavEnableKeyboard, ImGuiInputTextFlags__ImGuiInputTextFlags_Password, ImGui_ImplSdlGL3_Init,
     ImGui_ImplSdlGL3_NewFrame, ImGui_ImplSdlGL3_ProcessEvent, ImGui_ImplSdlGL3_RenderDrawData, ImVec2,
 };
-use crate::presenter::ui::{draw_layout_preview, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
+use crate::presenter::ui::{draw_layout_preview, draw_overlay_picker, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
 use crate::presenter::{cjk_font, PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
@@ -383,6 +383,8 @@ pub fn show_layout_create_settings(global_settings: &mut GlobalSettings, custom_
             ImGui::InputFloat(c"Widescreen coefficient".as_ptr(), &mut custom_layout.wide_screen_coefficient, 0.05, 0.5, c"%.3f".as_ptr(), 0);
 
             ImGui::PopItemWidth();
+
+            draw_overlay_picker(custom_layout);
         }
         ImGui::EndChild();
 

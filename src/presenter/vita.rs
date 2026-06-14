@@ -8,7 +8,7 @@ use crate::presenter::imgui::root::{
     ImDrawData, ImGui, ImGuiCol__ImGuiCol_Text, ImGui_ImplVitaGL_GamepadUsage, ImGui_ImplVitaGL_Init, ImGui_ImplVitaGL_MouseStickUsage, ImGui_ImplVitaGL_NewFrame, ImGui_ImplVitaGL_RenderDrawData,
     ImGui_ImplVitaGL_TouchUsage, ImVec2,
 };
-use crate::presenter::ui::{draw_layout_preview, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
+use crate::presenter::ui::{draw_layout_preview, draw_overlay_picker, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
 use crate::presenter::{
     cjk_font, PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_IN_SAMPLE_RATE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH,
 };
@@ -661,6 +661,8 @@ pub fn show_layout_create_settings(global_settings: &mut GlobalSettings, custom_
                 6,
             ));
         }
+
+        draw_overlay_picker(custom_layout);
 
         ImGui::EndChild();
         ImGui::SameLine(0.0, (*ImGui::GetStyle()).ItemSpacing.x);

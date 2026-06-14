@@ -63,6 +63,7 @@ mod mmap;
 mod presenter;
 mod ra_context;
 mod screen_layouts;
+mod screen_overlays;
 mod settings;
 mod soundtouch;
 mod utils;

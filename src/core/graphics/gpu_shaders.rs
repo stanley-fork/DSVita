@@ -207,6 +207,7 @@ pub struct GpuShadersPrograms {
     pub capture: GLuint,
     pub merge: GLuint,
     pub ra: GLuint,
+    pub overlay: GLuint,
 }
 
 impl GpuShadersPrograms {
@@ -232,6 +233,7 @@ impl GpuShadersPrograms {
         let merge = create_program("merge", shader_source!("merge_vert"), shader_source!("merge_frag"));
         let blend_3d = create_program("blend 3d", shader_source!("gpu_2d/shaders", "blend_3d_vert"), shader_source!("gpu_2d/shaders", "blend_3d_frag"));
         let ra = create_program("ra", shader_source!("ra_vert"), shader_source!("ra_frag"));
+        let overlay = create_program("overlay", shader_source!("ra_vert"), shader_source!("overlay_frag"));
 
         let obj = Gpu2DObjShaderProgram::new(&mut create_shader);
 
@@ -251,10 +253,11 @@ impl GpuShadersPrograms {
             capture,
             merge,
             ra,
+            overlay,
         }
     }
 
     pub const fn count() -> usize {
-        15 + Gpu3DShaderDepthPrograms::count() + Gpu2DBgShaderPrograms::count() + Gpu2DObjShaderProgram::count() + Gpu2DBlendProgram::count()
+        17 + Gpu3DShaderDepthPrograms::count() + Gpu2DBgShaderPrograms::count() + Gpu2DObjShaderProgram::count() + Gpu2DBlendProgram::count()
     }
 }

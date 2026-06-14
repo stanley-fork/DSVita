@@ -3,15 +3,17 @@ use crate::core::graphics::gpu_renderer::GpuRenderer;
 use crate::global_settings::GlobalSettings;
 use crate::key_bindings::KeyBinding;
 use crate::presenter::imgui::root::{
-    ImDrawData, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF, ImFontAtlas_GetGlyphRangesDefault,
-    ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCol__ImGuiCol_Text, ImGuiCond__ImGuiSetCond_Always, ImGuiHoveredFlags__ImGuiHoveredFlags_Default,
-    ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha, ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar, ImVec2, ImVec4,
+    ImDrawData, ImDrawList_AddImage, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF,
+    ImFontAtlas_GetGlyphRangesDefault, ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCol__ImGuiCol_Text, ImGuiCond__ImGuiSetCond_Always,
+    ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha,
+    ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar,
+    ImVec2, ImVec4,
 };
 use crate::presenter::{cjk_font, default_key_binding, show_controls_create_settings, show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
+use crate::screen_overlays;
 use crate::settings::{SettingValue, Settings, SettingsConfig, SETTING_GROUPS};
 use std::ffi::CString;
 use std::path::PathBuf;
@@ -207,6 +209,124 @@ unsafe fn center_next_window() {
     ImGui::SetNextWindowPos(&center, ImGuiCond__ImGuiSetCond_Always as _, &pivot);
 }
 
+/// Directory holding user overlay PNGs (`cartridge_path/overlays`). Set once in
+/// `show_main_menu`; read by the overlay picker and preview.
+static mut OVERLAYS_DIR: Option<PathBuf> = None;
+
+/// One-entry cache of the GL texture for the currently previewed overlay, keyed
+/// by file name so we only re-decode/upload when the selection changes.
+struct OverlayPreview {
+    name: String,
+    tex: u32,
+}
+static mut OVERLAY_PREVIEW: Option<OverlayPreview> = None;
+
+#[derive(Clone, Copy)]
+struct OverlayPreviewInfo {
+    tex: u32,
+}
+
+pub(crate) fn set_overlays_dir(dir: PathBuf) {
+    unsafe {
+        *(&raw mut OVERLAYS_DIR) = Some(dir);
+    }
+}
+
+/// Absolute path of the overlays dir, for telling the user where to drop PNGs.
+fn overlays_dir_display() -> String {
+    unsafe {
+        match (*(&raw const OVERLAYS_DIR)).as_deref() {
+            Some(dir) => fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()).display().to_string(),
+            None => String::new(),
+        }
+    }
+}
+
+fn available_overlays() -> Vec<String> {
+    unsafe {
+        match (*(&raw const OVERLAYS_DIR)).as_deref() {
+            Some(dir) => screen_overlays::list(dir),
+            None => Vec::new(),
+        }
+    }
+}
+
+/// Loads (and caches) the GL texture for overlay `name`. `None` when the
+/// overlay can't be decoded or no overlays dir is set.
+unsafe fn overlay_preview(name: &str) -> Option<OverlayPreviewInfo> {
+    let dir = (*(&raw const OVERLAYS_DIR)).as_deref()?;
+
+    let cache = &mut *(&raw mut OVERLAY_PREVIEW);
+    if let Some(p) = cache {
+        if p.name == name {
+            return Some(OverlayPreviewInfo { tex: p.tex });
+        }
+        if p.tex != 0 {
+            gl::DeleteTextures(1, &p.tex);
+        }
+        *cache = None;
+    }
+
+    let overlay = screen_overlays::load(&dir.join(name))?;
+
+    let mut tex = 0;
+    gl::GenTextures(1, &mut tex);
+    gl::BindTexture(gl::TEXTURE_2D, tex);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as _);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as _);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as _);
+    gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as _);
+    gl::TexImage2D(
+        gl::TEXTURE_2D,
+        0,
+        gl::RGBA as _,
+        overlay.width as _,
+        overlay.height as _,
+        0,
+        gl::RGBA,
+        gl::UNSIGNED_BYTE,
+        overlay.data.as_ptr() as _,
+    );
+
+    *cache = Some(OverlayPreview { name: name.to_string(), tex });
+    Some(OverlayPreviewInfo { tex })
+}
+
+/// Overlay picker combo ("None" + every `.png` in the overlays dir). Shared by
+/// both platforms' layout editors.
+pub(crate) unsafe fn draw_overlay_picker(custom_layout: &mut CustomLayout) {
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextDisabled(c"Overlay".as_ptr());
+    let hint = CString::new(format!("Place .png files in {}", overlays_dir_display())).unwrap();
+    ImGui::TextDisabled(hint.as_ptr());
+
+    let overlays = available_overlays();
+    let preview = CString::new(custom_layout.overlay.as_deref().unwrap_or("None")).unwrap();
+    let none_selected = custom_layout.overlay.is_none();
+    let sz = ImVec2 { x: 0f32, y: 0f32 };
+
+    if ImGui::BeginCombo(c"##overlay".as_ptr(), preview.as_ptr(), 0) {
+        if ImGui::Selectable(c"None".as_ptr(), none_selected, 0, &sz) {
+            custom_layout.overlay = None;
+        }
+        if none_selected {
+            ImGui::SetItemDefaultFocus();
+        }
+        for name in &overlays {
+            let is_selected = custom_layout.overlay.as_deref() == Some(name.as_str());
+            let label = CString::new(name.as_str()).unwrap();
+            if ImGui::Selectable(label.as_ptr(), is_selected, 0, &sz) {
+                custom_layout.overlay = Some(name.clone());
+            }
+            if is_selected {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+}
+
 /// Draws a scaled preview of the presenter screen with the two DS screens
 /// positioned/sized/rotated exactly as the layout would render them. Reserves
 /// the canvas area via a Dummy so surrounding layout flows normally.
@@ -227,6 +347,18 @@ pub(crate) unsafe fn draw_layout_preview(custom_layout: &CustomLayout) {
     // versions: Vita SDK vs the bundled 1.61) doesn't matter.
     ImDrawList_AddRectFilled(dl, &bg_min, &bg_max, 0xFF1A1A1A, 0.0, 0);
     ImDrawList_AddRect(dl, &bg_min, &bg_max, 0xFF505050, 0.0, 0, 1.0);
+
+    // Selected overlay stretched over the whole preview box, behind the screen
+    // quads — mirrors how the renderer draws it under the merged screens.
+    if let Some(name) = custom_layout.overlay.as_deref() {
+        if let Some(info) = overlay_preview(name) {
+            if info.tex != 0 {
+                let uv0 = ImVec2 { x: 0.0, y: 0.0 };
+                let uv1 = ImVec2 { x: 1.0, y: 1.0 };
+                ImDrawList_AddImage(dl, info.tex as _, &bg_min, &bg_max, &uv0, &uv1, 0xFFFFFFFF);
+            }
+        }
+    }
 
     const FILL: [u32; 2] = [0xCCC8783C, 0xCC3C78C8]; // top: blue-ish, bottom: orange-ish (0xAABBGGRR)
     const OUTLINE: [u32; 2] = [0xFFE89858, 0xFF58A8E8];
@@ -724,13 +856,17 @@ pub fn show_main_menu(
         let saves_path = cartridge_path.join("saves");
         let global_settings_path = cartridge_path.join("global_settings");
         let settings_path = cartridge_path.join("settings");
+        let overlays_path = cartridge_path.join("overlays");
         let _ = fs::create_dir_all(&cartridge_path);
         let _ = fs::create_dir_all(&saves_path);
         let _ = fs::create_dir_all(&global_settings_path);
         let _ = fs::create_dir_all(&settings_path);
+        let _ = fs::create_dir_all(&overlays_path);
 
         let mut global_settings = GlobalSettings::new(global_settings_path.clone(), default_keybinding).unwrap();
         screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
+        screen_layouts.set_overlays_dir(overlays_path.clone());
+        set_overlays_dir(overlays_path);
         ra_context.set_cache_dir(cartridge_path.join("ra"));
         cjk_download.set_file_path(&cjk_font::font_path(&cartridge_path));
 
