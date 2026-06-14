@@ -320,7 +320,7 @@ impl RaContext {
                                 }
                                 .header("User-Agent", USER_AGENT)
                                 .header("Content-Type", rc_request.content_type)
-                                .timeout(Duration::from_secs(20))
+                                .timeout(Duration::from_secs(120))
                                 .build()
                                 .unwrap();
 

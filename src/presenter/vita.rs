@@ -10,7 +10,7 @@ use crate::presenter::imgui::root::{
 };
 use crate::presenter::ui::{draw_layout_preview, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
 use crate::presenter::{
-    PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_IN_SAMPLE_RATE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH,
+    cjk_font, PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_IN_SAMPLE_RATE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH,
 };
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
@@ -399,7 +399,13 @@ impl Presenter {
         }
     }
 
-    pub fn present_ui(&mut self, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext, default_key_binding: KeyBinding) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+    pub fn present_ui(
+        &mut self,
+        screen_layouts: &mut ScreenLayouts,
+        ra_context: &mut RaContext,
+        cjk_download: &mut cjk_font::Download,
+        default_key_binding: KeyBinding,
+    ) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
         unsafe {
             sceShellUtilUnlock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN | SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN_2);
 
@@ -424,6 +430,9 @@ impl Presenter {
                                 settings.populate_screen_layouts(screen_layouts);
                                 settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
 
+                                ra_context.set_cache_dir(cartridge_path.join("ra"));
+                                cjk_download.set_file_path(&cjk_font::font_path(&cartridge_path));
+
                                 return Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, settings));
                             }
                         }
@@ -431,7 +440,7 @@ impl Presenter {
                 }
             }
 
-            match show_main_menu(PathBuf::from(ROM_PATH), screen_layouts, ra_context, default_key_binding, self) {
+            match show_main_menu(PathBuf::from(ROM_PATH), screen_layouts, ra_context, default_key_binding, cjk_download, self) {
                 None => None,
                 Some((cartridge_io, global_settings, mut settings)) => {
                     screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);

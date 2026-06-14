@@ -31,7 +31,7 @@ use crate::key_bindings::KeyBinding;
 use crate::logging::{debug_println, info_println};
 use crate::mmap::{register_abort_handler, ArmContext, Mmap, PAGE_SIZE};
 use crate::presenter::ui::UiPauseMenuReturn;
-use crate::presenter::{PresentEvent, Presenter, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
+use crate::presenter::{cjk_font, PresentEvent, Presenter, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::ScreenLayouts;
 use crate::settings::Arm7Emu;
@@ -427,15 +427,20 @@ pub fn actual_main() {
 
     let mut screen_layouts = ScreenLayouts::new();
     let mut ra_context = RaContext::new();
+    let mut cjk_download = cjk_font::Download::new();
     let ra_context_thread_handle = ra_context.start_server_request_receive_thread();
 
     let mut running = true;
     while running {
-        let (mut cartridge_io, global_settings, mut settings) =
-            match presenter.present_ui(&mut screen_layouts, &mut ra_context, KeyBinding::new("Default".to_string(), Presenter::get_default_key_mapping())) {
-                Some((cartridge_io, global_settings, settings)) => (cartridge_io, global_settings, settings),
-                None => return,
-            };
+        let (mut cartridge_io, global_settings, mut settings) = match presenter.present_ui(
+            &mut screen_layouts,
+            &mut ra_context,
+            &mut cjk_download,
+            KeyBinding::new("Default".to_string(), Presenter::get_default_key_mapping()),
+        ) {
+            Some((cartridge_io, global_settings, settings)) => (cartridge_io, global_settings, settings),
+            None => return,
+        };
 
         if settings.retroachievements() {
             if ra_context.get_user_info().is_none() {

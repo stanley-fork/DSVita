@@ -9,7 +9,7 @@ use crate::presenter::imgui::root::{
     ImGui_ImplSdlGL3_NewFrame, ImGui_ImplSdlGL3_ProcessEvent, ImGui_ImplSdlGL3_RenderDrawData, ImVec2,
 };
 use crate::presenter::ui::{draw_layout_preview, init_ui, show_main_menu, show_pause_menu, show_progress, CustomLayoutContext, RALoginContext, UiBackend, UiPauseMenuReturn};
-use crate::presenter::{PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
+use crate::presenter::{cjk_font, PresentEvent, PRESENTER_AUDIO_IN_BUF_SIZE, PRESENTER_AUDIO_OUT_BUF_SIZE, PRESENTER_AUDIO_OUT_SAMPLE_RATE, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
 use crate::settings::{Arm7Emu, Settings, DEFAULT_SETTINGS};
@@ -164,7 +164,13 @@ impl Presenter {
         Some(instance)
     }
 
-    pub fn present_ui(&mut self, screen_layouts: &mut ScreenLayouts, ra_context: &mut RaContext, default_keybinding: KeyBinding) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+    pub fn present_ui(
+        &mut self,
+        screen_layouts: &mut ScreenLayouts,
+        ra_context: &mut RaContext,
+        cjk_download: &mut cjk_font::Download,
+        default_keybinding: KeyBinding,
+    ) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
         let file_path = PathBuf::from(self.arg_matches.get_one::<String>("nds_rom").unwrap());
         if self.arg_matches.get_flag("ui") {
             if file_path.exists() && file_path.is_file() {
@@ -172,7 +178,7 @@ impl Presenter {
                 std::process::exit(1);
             }
 
-            match show_main_menu(file_path, screen_layouts, ra_context, default_keybinding, self) {
+            match show_main_menu(file_path, screen_layouts, ra_context, default_keybinding, cjk_download, self) {
                 None => None,
                 Some((cartridge_io, global_settings, mut settings)) => {
                     screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
@@ -192,6 +198,7 @@ impl Presenter {
             let preview = CartridgePreview::new(file_path.clone()).unwrap();
 
             ra_context.set_cache_dir(file_path.parent().unwrap().join("ra"));
+            cjk_download.set_file_path(&cjk_font::font_path(&file_path.parent().unwrap()));
 
             let global_settings = GlobalSettings::new(file_path.parent().unwrap().join("global_settings"), default_keybinding).unwrap();
             screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);

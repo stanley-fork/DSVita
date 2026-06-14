@@ -1,5 +1,5 @@
 pub use self::platform::*;
-mod cjk_font;
+pub mod cjk_font;
 pub mod ui;
 
 pub(crate) mod imgui {

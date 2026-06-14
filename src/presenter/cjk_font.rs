@@ -3,14 +3,16 @@
 //! costs nothing unless installed and stays tiny when it is.
 
 use crate::presenter::imgui::root::{ImFontAtlas_AddFontFromMemoryTTF, ImFontConfig, ImFontConfig_ImFontConfig, ImGui};
+use crate::utils::{set_thread_prio_affinity, ThreadAffinity, ThreadPriority};
+use reqwest::blocking::Client;
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::{fs, mem, thread};
 
 const FONT_FILE: &str = "NotoSansCJKsc-Regular.otf";
-const FONT_URL: &str = "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf";
+const FONT_URL: &str = "https://raw.githubusercontent.com/notofonts/noto-cjk/refs/heads/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf";
 
 /// Where the font lives, under the cartridge root.
 pub fn font_path(cartridge_path: &Path) -> PathBuf {
@@ -77,78 +79,100 @@ unsafe fn merge_into_atlas(path: &Path, texts: &[String]) {
 
 #[derive(Default)]
 struct DownloadState {
-    downloading: bool,
+    progress: Option<(usize, usize)>,
     done: bool,
     error: String,
 }
 
 pub struct Download {
+    pub path: PathBuf,
     state: Arc<Mutex<DownloadState>>,
 }
 
 impl Download {
-    pub fn new(path: &Path) -> Self {
-        let done = path.exists();
+    pub fn new() -> Self {
         Download {
+            path: PathBuf::new(),
             state: Arc::new(Mutex::new(DownloadState {
-                downloading: false,
-                done,
+                progress: None,
+                done: false,
                 error: String::new(),
             })),
         }
     }
 
+    pub fn set_file_path(&mut self, path: &Path) {
+        self.path = path.to_path_buf();
+        self.state.lock().unwrap().done = path.exists();
+    }
+
     /// (done, downloading, error) snapshot for rendering.
-    pub fn snapshot(&self) -> (bool, bool, String) {
+    pub fn snapshot(&self) -> (bool, Option<(usize, usize)>, String) {
         let st = self.state.lock().unwrap();
-        (st.done, st.downloading, st.error.clone())
+        (st.done, st.progress, st.error.clone())
     }
 
     /// Downloads the font on a background thread (no-op if already downloading/done).
-    pub fn start(&self, path: PathBuf) {
+    pub fn start(&self) {
         {
             let mut st = self.state.lock().unwrap();
-            if st.downloading || st.done {
+            if st.progress.is_some() || st.done {
                 return;
             }
-            st.downloading = true;
+            st.progress = Some((0, 0));
             st.error.clear();
         }
+        let path = self.path.clone();
         let state = Arc::clone(&self.state);
         thread::Builder::new()
             .name("cjk_font_download".to_string())
             .spawn(move || {
-                let result = download(&path);
+                set_thread_prio_affinity(ThreadPriority::Default, &[ThreadAffinity::Core1]);
+                let result = download(&path, &state);
                 let mut st = state.lock().unwrap();
-                st.downloading = false;
+                st.progress = None;
                 match result {
                     Ok(()) => st.done = true,
                     Err(e) => st.error = e,
                 }
             })
-            .ok();
+            .unwrap();
     }
 }
 
-fn download(path: &Path) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(120)).build().map_err(|e| e.to_string())?;
-    let response = client
-        .get(FONT_URL)
-        .header("User-Agent", concat!("DSVita/", env!("CARGO_PKG_VERSION")))
-        .send()
-        .map_err(|e| format!("Connection failed: {e}\nCheck your internet connection"))?;
+fn download(path: &Path, state: &Arc<Mutex<DownloadState>>) -> Result<(), String> {
+    let client = Client::new();
+    let request = client.get(FONT_URL).header("User-Agent", concat!("DSVita/", env!("CARGO_PKG_VERSION"))).build().unwrap();
+    let mut response = client.execute(request).map_err(|e| format!("Connection failed: {e}\nCheck your internet connection"))?;
     if !response.status().is_success() {
         return Err(format!("Server returned status {}", response.status().as_u16()));
     }
-    let bytes = response.bytes().map_err(|e| format!("Download failed: {e}"))?;
+
+    let total_length = response.content_length().unwrap_or(0) as usize;
+    state.lock().unwrap().progress = Some((0, total_length));
+    let mut all_bytes = Vec::new();
+    let mut buf = [0; 2048];
+    loop {
+        match response.read(&mut buf) {
+            Ok(len) => {
+                if len == 0 {
+                    break;
+                }
+                all_bytes.extend(&buf[..len]);
+                state.lock().unwrap().progress = Some((all_bytes.len(), total_length));
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+
     // Reject HTML error/redirect pages — a real font starts with a known magic.
-    let is_font = bytes.len() > 4 && matches!(&bytes[..4], b"OTTO" | b"true" | b"ttcf" | [0x00, 0x01, 0x00, 0x00]);
+    let is_font = all_bytes.len() > 4 && matches!(&all_bytes[..4], b"OTTO" | b"true" | b"ttcf" | [0x00, 0x01, 0x00, 0x00]);
     if !is_font {
         return Err("Downloaded file is not a valid font".to_string());
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create font dir: {e}"))?;
     }
-    fs::write(path, &bytes).map_err(|e| format!("Failed to save font: {e}"))?;
+    fs::write(path, &all_bytes).map_err(|e| format!("Failed to save font: {e}"))?;
     Ok(())
 }

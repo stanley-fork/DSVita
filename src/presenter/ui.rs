@@ -14,7 +14,7 @@ use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
 use crate::settings::{SettingValue, Settings, SettingsConfig, SETTING_GROUPS};
 use std::ffi::CString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::{fs, mem, ptr};
 pub trait UiBackend {
@@ -387,7 +387,6 @@ unsafe fn render_global_settings_overlay(
     layout_settings: &mut bool,
     controls_settings: &mut bool,
     ra_settings: &mut bool,
-    cjk_font_path: &Path,
     cjk_download: &cjk_font::Download,
     cjk_applied: bool,
     overlay_focused: &mut bool,
@@ -417,16 +416,26 @@ unsafe fn render_global_settings_overlay(
     ImGui::Separator();
     ImGui::Spacing();
     let (done, downloading, error) = cjk_download.snapshot();
-    if cjk_applied {
-        centered_text(c"Chinese font installed.");
-    } else if downloading {
-        centered_text(c"Downloading Chinese font...");
-    } else if done {
-        centered_text(c"Chinese font downloaded. Restart to apply.");
-    } else {
-        centered_text(c"Download a font to show Chinese game names.");
-        if menu_button(c"Download Chinese font", BUTTON_WIDTH) {
-            cjk_download.start(cjk_font_path.to_path_buf());
+    match downloading {
+        None => {
+            if cjk_applied {
+                centered_text(c"Chinese font installed.");
+            } else if done {
+                centered_text(c"Chinese font downloaded. Restart to apply.");
+            } else {
+                centered_text(c"Download a font to show Chinese game names.");
+                if menu_button(c"Download Chinese font", BUTTON_WIDTH) {
+                    cjk_download.start();
+                }
+            }
+        }
+        Some((current_len, total_len)) => {
+            let text = if total_len == 0 {
+                format!("Downloading Chinese font... ({}kb)", current_len / 1024)
+            } else {
+                format!("Downloading Chinese font... ({}%%)", current_len * 100 / total_len)
+            };
+            centered_text(CString::from_str(&text).unwrap().as_c_str());
         }
     }
     if !error.is_empty() {
@@ -702,11 +711,13 @@ pub struct RALoginContext {
     pub error: String,
     pub logging_in: bool,
 }
+
 pub fn show_main_menu(
     cartridge_path: PathBuf,
     screen_layouts: &mut ScreenLayouts,
     ra_context: &mut RaContext,
     default_keybinding: KeyBinding,
+    cjk_download: &mut cjk_font::Download,
     ui_backend: &mut impl UiBackend,
 ) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
     unsafe {
@@ -721,6 +732,7 @@ pub fn show_main_menu(
         let mut global_settings = GlobalSettings::new(global_settings_path.clone(), default_keybinding).unwrap();
         screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
         ra_context.set_cache_dir(cartridge_path.join("ra"));
+        cjk_download.set_file_path(&cjk_font::font_path(&cartridge_path));
 
         let cartridges = load_cartridges(&cartridge_path);
         let mut settings_configs: Vec<SettingsConfig> = cartridges.iter().map(|c| SettingsConfig::new(settings_path.join(format!("{}.ini", c.file_name)))).collect();
@@ -755,12 +767,7 @@ pub fn show_main_menu(
         let mut ra_settings_focused = true;
         let mut ra_login_context = RALoginContext::default();
 
-        // Optional Chinese font: load it over only the glyphs the game names use,
-        // before the first frame builds the atlas. `cjk_applied` is false when a
-        // font was only just downloaded (it applies on the next launch).
-        let cjk_path = cjk_font::font_path(&cartridge_path);
-        let cjk_download = cjk_font::Download::new(&cjk_path);
-        let cjk_applied = cjk_font::load_once(&cjk_path, || {
+        let cjk_applied = cjk_font::load_once(&cjk_download.path, || {
             let mut texts: Vec<String> = cartridges.iter().map(|c| c.file_name.clone()).collect();
             texts.extend(cartridges.iter().filter_map(|c| c.read_title().ok()));
             texts
@@ -806,7 +813,6 @@ pub fn show_main_menu(
                 &mut layout_settings,
                 &mut controls_settings,
                 &mut ra_settings,
-                &cjk_path,
                 &cjk_download,
                 cjk_applied,
                 &mut global_settings_focused,
