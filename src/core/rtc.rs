@@ -142,7 +142,7 @@ impl Rtc {
             let year = local_now.year() as u32 % 100;
             let month = local_now.month() as u8;
             let day = local_now.day() as u8;
-            let weekday = local_now.weekday() as u8;
+            let weekday = local_now.weekday() as u8 + 1;
             let (hour, is_pm) = {
                 let hour = local_now.hour();
                 ((if self.cnt & 0x2 == 0 { hour % 12 } else { hour }) as u8, hour >= 12)
