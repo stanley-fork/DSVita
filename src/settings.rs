@@ -175,8 +175,8 @@ impl Display for SettingValue {
 #[derive(Copy, Clone, EnumIter, Eq, IntoStaticStr, PartialEq)]
 pub enum SettingGroup {
     Emulation,
+    Graphics,
     Screen,
-    Audio,
     System,
 }
 
@@ -204,8 +204,6 @@ impl Setting {
 lazy_static! {
     pub static ref DEFAULT_SETTINGS: Settings = Settings(
         [
-            Setting::new("Framelimit", "Caps the emulation speed relative to real hardware. Set to 'off' to run as fast as possible.", framelimit_value(), true, SettingGroup::Emulation),
-            Setting::new("Audio", "Turn audio off for a small performance boost.", SettingValue::Bool(true), true, SettingGroup::Audio),
             Setting::new(
                 "Arm7 Emulation",
                 "How the ARM7 co-processor is emulated. AccurateLle is slowest but most compatible. SoundHle is ~10%% faster and Hle ~15-20%% faster, but both reduce compatibility. Use AccurateLle if a game crashes, freezes or misbehaves.",
@@ -220,27 +218,29 @@ lazy_static! {
                 false,
                 SettingGroup::Emulation,
             ),
+            Setting::new("Framelimit", "Caps the emulation speed relative to real hardware. Set to 'off' to run as fast as possible.", framelimit_value(), true, SettingGroup::Emulation),
+            Setting::new("Audio", "Turn audio off for a small performance boost.", SettingValue::Bool(true), true, SettingGroup::Emulation),
+            Setting::new("Audio stretching", "Stretches audio to prevent crackling when a game runs below full speed. Adds a little latency.", SettingValue::Bool(true), true, SettingGroup::Emulation),
             Setting::new(
                 "Geometry 3D frameskip",
                 "Skips redundant 3D frames for better performance at the cost of some latency. Turn off if a game has 3D glitches or renders 3D on both screens.",
                 SettingValue::Bool(true),
                 true,
-                SettingGroup::Screen,
+                SettingGroup::Graphics,
             ),
-            Setting::new("Upscale 3D factor", "Renders 3D graphics at a higher internal resolution. Higher values look sharper but run slower.", Gpu3DRenderer::upscale_factor_settings_value(), true, SettingGroup::Screen),
-            Setting::new("Audio stretching", "Stretches audio to prevent crackling when a game runs below full speed. Adds a little latency.", SettingValue::Bool(true), true, SettingGroup::Audio),
+            Setting::new("Upscale 3D factor", "Renders 3D graphics at a higher internal resolution. Higher values look sharper but run slower.", Gpu3DRenderer::upscale_factor_settings_value(), true, SettingGroup::Graphics),
             Setting::new("Screen Layout", "How the two screens are arranged on the display. In-game: PS + L or PS + R cycles through layouts.", SettingValue::List(ListInner::new(0, vec![])), true, SettingGroup::Screen),
-            Setting::new("Wide 3D screen", "Experimental widescreen hack for 3D. Can cause glitches. Only available with the single, focus-overlap or custom layouts.", Gpu3DRenderer::widescreen_settings_value(), true, SettingGroup::Screen),
+            Setting::new("Wide 3D screen", "Experimental widescreen hack for 3D. Can cause glitches. Only available with the single, focus-overlap or custom layouts.", Gpu3DRenderer::widescreen_settings_value(), true, SettingGroup::Graphics),
             Setting::new("Swap screens", "Swaps the top and bottom screens. In-game: PS + Cross.", SettingValue::Bool(false), true, SettingGroup::Screen),
             Setting::new("Top screen scale", "Size of the top screen. In-game: PS + Square cycles sizes.", ScreenLayout::scale_settings_value(), true, SettingGroup::Screen),
             Setting::new("Bottom screen scale", "Size of the bottom screen. In-game: PS + Circle cycles sizes.", ScreenLayout::scale_settings_value(), true, SettingGroup::Screen),
+            Setting::new("Tap corner to swap screens", "Tap the bottom-right corner of the screen to swap the large and small screens (same as PS + Cross).", SettingValue::Bool(false), true, SettingGroup::Screen),
             Setting::new("Stream top screen", "Stream top screen over a modified version of udcd-uvc. You need to have CapUnlocker and a custom version of udcd-uvc installed. You can find the instructions in the Readme.", SettingValue::Bool(false), false, SettingGroup::Screen),
             Setting::new("Language", "Preferred in-game language. Only applies if the game actually includes it.", Language::iter().into(), false, SettingGroup::System),
+            Setting::new("Controls", "Custom button mapping to use. Create profiles under Global settings.", SettingValue::List(ListInner::new(0, vec![])), true, SettingGroup::System),
             Setting::new("Joystick as D-Pad", "Use the left analog stick as the D-Pad.", SettingValue::Bool(true), true, SettingGroup::System),
             Setting::new("Show debug statistics", "Show FPS and other debug information while playing.", SettingValue::Bool(true), true, SettingGroup::System),
             Setting::new("Retroachievements", "Enables RetroAchievements. Log in first via Global settings.", SettingValue::Bool(true), false, SettingGroup::System),
-            Setting::new("Tap corner to swap screens", "Tap the bottom-right corner of the screen to swap the large and small screens (same as PS + Cross).", SettingValue::Bool(false), true, SettingGroup::System),
-            Setting::new("Controls", "Custom button mapping to use. Create profiles under Global settings.", SettingValue::List(ListInner::new(0, vec![])), true, SettingGroup::System),
         ],
     );
 }
@@ -251,25 +251,25 @@ pub struct Settings([Setting; 19]);
 #[repr(u8)]
 #[derive(Copy, Clone)]
 pub(crate) enum SettingIndices {
-    Framelimit = 0,
-    Audio,
-    Arm7Emu,
+    Arm7Emu = 0,
     HleOsIrqHandler,
+    Framelimit,
+    Audio,
+    AudioStretching,
     Geometry3DSkip,
     Upscale3DFactor,
-    AudioStretching,
     ScreenLayout,
     Widescreen,
     SwapScreen,
     TopScreenScale,
     BottomScreenScale,
+    TapCornerToSwap,
     StreamTopScreen,
     Language,
+    Controls,
     JoystickAsDpad,
     ShowDebugStatistics,
     Retroachievements,
-    TapCornerToSwap,
-    Controls,
 }
 
 impl Settings {

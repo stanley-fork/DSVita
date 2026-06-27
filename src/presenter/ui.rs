@@ -897,7 +897,7 @@ pub fn show_main_menu(
     default_keybinding: KeyBinding,
     cjk_download: &mut cjk_font::Download,
     ui_backend: &mut impl UiBackend,
-) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+) -> Option<(CartridgeIo, GlobalSettings, Settings, PathBuf)> {
     unsafe {
         let saves_path = cartridge_path.join("saves");
         let global_settings_path = cartridge_path.join("global_settings");
@@ -1049,7 +1049,8 @@ pub fn show_main_menu(
         let sel = detail_game.unwrap();
         let preview = cartridges.into_iter().nth(sel).unwrap();
         let save_file = saves_path.join(format!("{}.sav", preview.file_name));
-        Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, settings_configs.swap_remove(sel).settings))
+        let config = settings_configs.swap_remove(sel);
+        Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, config.settings, config.settings_file_path))
     }
 }
 unsafe fn load_cartridges(path: &std::path::Path) -> Vec<CartridgePreview> {
@@ -1282,12 +1283,16 @@ pub enum UiPauseMenuReturn {
     QuitApp,
 }
 
-pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRenderer, settings: &mut Settings) -> UiPauseMenuReturn {
+pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRenderer, settings: &mut Settings, settings_file_path: &std::path::Path) -> UiPauseMenuReturn {
     let mut pressed_settings = false;
     let mut pressed_quit = false;
     let mut pressed_exit = false;
     let mut return_value = None;
     let mut settings_config = SettingsConfig::from(settings.clone());
+    // Path of the per-game ini, so runtime changes can be persisted from here.
+    // Empty when launched without a settings file (e.g. direct CLI launch).
+    settings_config.settings_file_path = settings_file_path.to_path_buf();
+    let savable = !settings_file_path.as_os_str().is_empty();
     let mut active_tab: usize = 0;
     let mut overlay_focused = true;
     loop {
@@ -1368,7 +1373,26 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
             if return_value.is_none() {
                 if pressed_settings {
                     if begin_fullscreen_overlay(c"##details") {
-                        render_settings_tabs(&mut settings_config, &mut active_tab, true, 0f32);
+                        let reserve = if savable { ImGui::GetFrameHeightWithSpacing() } else { 0f32 };
+                        render_settings_tabs(&mut settings_config, &mut active_tab, true, reserve);
+
+                        // Persist runtime changes to the game's ini. Pinned to the
+                        // bottom and disabled until something changed.
+                        if savable {
+                            ImGui::SetCursorPosY(ImGui::GetWindowHeight() - (*ImGui::GetStyle()).WindowPadding.y - ImGui::GetFrameHeight());
+                            let dirty = settings_config.dirty;
+                            if !dirty {
+                                ImGui::PushItemFlag(ImGuiItemFlags__ImGuiItemFlags_Disabled as _, true);
+                                ImGui::PushStyleVar(ImGuiStyleVar__ImGuiStyleVar_Alpha as _, (*ImGui::GetStyle()).Alpha * 0.5f32);
+                            }
+                            if full_width_button(c"Save settings") {
+                                settings_config.flush();
+                            }
+                            if !dirty {
+                                ImGui::PopItemFlag();
+                                ImGui::PopStyleVar(1);
+                            }
+                        }
                         // Back/Esc steps out of the settings child first; only
                         // closes the settings menu when at the tab level.
                         if back_closes_overlay(overlay_focused) {
@@ -1389,9 +1413,10 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
             ui_backend.swap_window();
 
             if let Some(ret) = return_value {
-                if settings_config.dirty {
-                    *settings = settings_config.settings;
-                }
+                // Apply unconditionally: a Save clears `dirty`, so gating on it
+                // would drop the runtime changes the user just saved. Copying back
+                // unchanged settings is a harmless no-op.
+                *settings = settings_config.settings;
                 return ret;
             }
         }

@@ -433,13 +433,13 @@ pub fn actual_main() {
 
     let mut running = true;
     while running {
-        let (mut cartridge_io, global_settings, mut settings) = match presenter.present_ui(
+        let (mut cartridge_io, global_settings, mut settings, settings_file_path) = match presenter.present_ui(
             &mut screen_layouts,
             &mut ra_context,
             &mut cjk_download,
             KeyBinding::new("Default".to_string(), Presenter::get_default_key_mapping()),
         ) {
-            Some((cartridge_io, global_settings, settings)) => (cartridge_io, global_settings, settings),
+            Some((cartridge_io, global_settings, settings, settings_file_path)) => (cartridge_io, global_settings, settings, settings_file_path),
             None => return,
         };
 
@@ -673,7 +673,7 @@ pub fn actual_main() {
                     ra_context.on_idle();
                 }
                 emu_unsafe.get_mut().settings.set_screen_layout(&screen_layout);
-                match presenter.present_pause(gpu_renderer, &mut emu_unsafe.get_mut().settings) {
+                match presenter.present_pause(gpu_renderer, &mut emu_unsafe.get_mut().settings, &settings_file_path) {
                     UiPauseMenuReturn::Quit => {
                         gpu_renderer.set_quit(true);
                         gpu_renderer.unpause(cpu_thread.thread());

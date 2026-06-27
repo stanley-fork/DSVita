@@ -417,7 +417,7 @@ impl Presenter {
         ra_context: &mut RaContext,
         cjk_download: &mut cjk_font::Download,
         default_key_binding: KeyBinding,
-    ) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+    ) -> Option<(CartridgeIo, GlobalSettings, Settings, PathBuf)> {
         unsafe {
             sceShellUtilUnlock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN | SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN_2);
 
@@ -437,7 +437,7 @@ impl Presenter {
                                 let preview = CartridgePreview::new(path).unwrap();
 
                                 let global_settings = GlobalSettings::new(cartridge_path.join("global_settings"), default_key_binding).unwrap();
-                                let mut settings = SettingsConfig::new(settings_file).settings;
+                                let mut settings = SettingsConfig::new(settings_file.clone()).settings;
                                 screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
                                 settings.populate_screen_layouts(screen_layouts);
                                 settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
@@ -445,7 +445,7 @@ impl Presenter {
                                 ra_context.set_cache_dir(cartridge_path.join("ra"));
                                 cjk_download.set_file_path(&cjk_font::font_path(&cartridge_path));
 
-                                return Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, settings));
+                                return Some((CartridgeIo::from_preview(preview, save_file).unwrap(), global_settings, settings, settings_file));
                             }
                         }
                     }
@@ -454,11 +454,11 @@ impl Presenter {
 
             match show_main_menu(PathBuf::from(ROM_PATH), screen_layouts, ra_context, default_key_binding, cjk_download, self) {
                 None => None,
-                Some((cartridge_io, global_settings, mut settings)) => {
+                Some((cartridge_io, global_settings, mut settings, settings_file_path)) => {
                     screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
                     settings.populate_screen_layouts(screen_layouts);
                     settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
-                    Some((cartridge_io, global_settings, settings))
+                    Some((cartridge_io, global_settings, settings, settings_file_path))
                 }
             }
         }
@@ -468,9 +468,9 @@ impl Presenter {
         unsafe { sceShellUtilLock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN | SCE_SHELL_UTIL_LOCK_TYPE_QUICK_MENU | SCE_SHELL_UTIL_LOCK_TYPE_USB_CONNECTION | SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN_2) };
     }
 
-    pub fn present_pause(&mut self, gpu_renderer: &GpuRenderer, settings: &mut Settings) -> UiPauseMenuReturn {
+    pub fn present_pause(&mut self, gpu_renderer: &GpuRenderer, settings: &mut Settings, settings_file_path: &std::path::Path) -> UiPauseMenuReturn {
         unsafe { sceShellUtilUnlock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN | SCE_SHELL_UTIL_LOCK_TYPE_QUICK_MENU | SCE_SHELL_UTIL_LOCK_TYPE_USB_CONNECTION | SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN_2) };
-        let ret = show_pause_menu(self, gpu_renderer, settings);
+        let ret = show_pause_menu(self, gpu_renderer, settings, settings_file_path);
         match ret {
             UiPauseMenuReturn::Resume | UiPauseMenuReturn::BlowMic => unsafe {
                 self.do_nothing_until_all_btns_released = true;

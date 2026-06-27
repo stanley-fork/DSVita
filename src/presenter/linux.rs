@@ -170,7 +170,7 @@ impl Presenter {
         ra_context: &mut RaContext,
         cjk_download: &mut cjk_font::Download,
         default_keybinding: KeyBinding,
-    ) -> Option<(CartridgeIo, GlobalSettings, Settings)> {
+    ) -> Option<(CartridgeIo, GlobalSettings, Settings, PathBuf)> {
         let file_path = PathBuf::from(self.arg_matches.get_one::<String>("nds_rom").unwrap());
         if self.arg_matches.get_flag("ui") {
             if file_path.exists() && file_path.is_file() {
@@ -180,11 +180,11 @@ impl Presenter {
 
             match show_main_menu(file_path, screen_layouts, ra_context, default_keybinding, cjk_download, self) {
                 None => None,
-                Some((cartridge_io, global_settings, mut settings)) => {
+                Some((cartridge_io, global_settings, mut settings, settings_file_path)) => {
                     screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
                     settings.populate_screen_layouts(screen_layouts);
                     settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
-                    Some((cartridge_io, global_settings, settings))
+                    Some((cartridge_io, global_settings, settings, settings_file_path))
                 }
             }
         } else {
@@ -204,7 +204,8 @@ impl Presenter {
             screen_layouts.populate_custom_layouts(&global_settings.custom_layouts);
             settings.populate_screen_layouts(screen_layouts);
             settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
-            Some((CartridgeIo::from_preview(preview, save_path).unwrap(), global_settings, settings))
+            // Direct CLI launch has no per-game ini, so it isn't savable at runtime.
+            Some((CartridgeIo::from_preview(preview, save_path).unwrap(), global_settings, settings, PathBuf::new()))
         }
     }
 
@@ -212,8 +213,8 @@ impl Presenter {
 
     pub fn on_game_launched(&self) {}
 
-    pub fn present_pause(&mut self, gpu_renderer: &GpuRenderer, settings: &mut Settings) -> UiPauseMenuReturn {
-        show_pause_menu(self, gpu_renderer, settings)
+    pub fn present_pause(&mut self, gpu_renderer: &GpuRenderer, settings: &mut Settings, settings_file_path: &std::path::Path) -> UiPauseMenuReturn {
+        show_pause_menu(self, gpu_renderer, settings, settings_file_path)
     }
 
     pub fn present_progress(&mut self, current_name: impl AsRef<str>, progress: usize, total: usize) {
