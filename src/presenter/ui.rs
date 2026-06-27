@@ -5,7 +5,7 @@ use crate::key_bindings::KeyBinding;
 use crate::presenter::imgui::root::{
     ImDrawData, ImDrawList_AddImage, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF,
     ImFontAtlas_GetGlyphRangesDefault, ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCol__ImGuiCol_Text, ImGuiCond__ImGuiSetCond_Always,
-    ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiStyleVar__ImGuiStyleVar_Alpha,
+    ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiNavInput__ImGuiNavInput_FocusNext, ImGuiNavInput__ImGuiNavInput_FocusPrev, ImGuiStyleVar__ImGuiStyleVar_Alpha,
     ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse,
     ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar,
     ImVec2, ImVec4,
@@ -66,12 +66,18 @@ unsafe fn icon_image(tex: u32) {
 }
 
 #[inline]
-unsafe fn cancel_pressed() -> bool {
+unsafe fn nav_input_pressed(input: u32) -> bool {
     // Edge-triggered: imgui sets DownDuration to 0.0 only on the frame the
     // input is first pressed (-1.0 when up, increasing while held). Using the
-    // raw NavInputs value instead would fire every frame the key is held, which
-    // re-triggers back-navigation once imgui has already stepped out a level.
-    (*ImGui::GetIO()).NavInputsDownDuration[ImGuiNavInput__ImGuiNavInput_Cancel as usize] == 0f32
+    // raw NavInputs value instead would fire every frame the input is held.
+    (*ImGui::GetIO()).NavInputsDownDuration[input as usize] == 0f32
+}
+
+#[inline]
+unsafe fn cancel_pressed() -> bool {
+    // Edge-triggered so back-navigation doesn't re-trigger once imgui has
+    // already stepped out a level while the key is still held.
+    nav_input_pressed(ImGuiNavInput__ImGuiNavInput_Cancel)
 }
 
 /// Manual tab bar for the settings categories (imgui 1.61 has no TabBar API):
@@ -106,6 +112,17 @@ unsafe fn settings_tab_bar(active: &mut usize) {
 /// `button_reserve` is extra height to keep free below for a caller button
 /// (e.g. Save); 0 if none.
 unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab: &mut usize, only_runtime: bool, button_reserve: f32) {
+    // L / R shoulder buttons cycle through the category tabs. imgui's gamepad
+    // backend maps the shoulders to FocusPrev/FocusNext; nothing else consumes
+    // them here, so read them directly (edge-triggered).
+    let n = SettingGroup::iter().len();
+    if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusPrev) {
+        *active_tab = (*active_tab + n - 1) % n;
+    }
+    if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusNext) {
+        *active_tab = (*active_tab + 1) % n;
+    }
+
     settings_tab_bar(active_tab);
     ImGui::Separator();
 
@@ -1100,11 +1117,45 @@ unsafe fn render_left_panel(cartridges: &[CartridgePreview], hovered: &mut Optio
 
     let child_sz = ImVec2 { x: 0f32, y: 0f32 };
     if ImGui::BeginChild(c"##gamelist".as_ptr() as _, &child_sz, false, 0) {
+        let n = cartridges.len();
+        // L / R shoulder buttons page-skip the list. The list is gamepad-nav'd
+        // (a Selectable holds the NavId), so we must move the *selection* by a
+        // page, not just scroll: scrolling alone leaves NavId behind and the next
+        // d-pad press snaps the view back to it. We find the focused row by
+        // matching the current NavId, shift it by a page, and re-focus + center
+        // the target. Suppressed while an L/R-using overlay (settings tabs) is on
+        // top so we don't move the selection in the list hidden behind it.
+        let overlay_open = detail_game.is_some() || *show_global_settings;
+        let dir = if overlay_open || n == 0 {
+            0
+        } else if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusPrev) {
+            -1
+        } else if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusNext) {
+            1
+        } else {
+            0
+        };
+        let target = if dir != 0 {
+            let nav_id = (*ImGui::GetCurrentContext()).NavId;
+            let cur = cartridges
+                .iter()
+                .position(|c| {
+                    let name = CString::new(c.file_name.clone()).unwrap();
+                    ImGui::GetID(name.as_ptr() as _) == nav_id
+                })
+                .map_or(0, |c| c as isize);
+            let page = ((ImGui::GetWindowHeight() / ImGui::GetTextLineHeightWithSpacing()) as isize).max(1);
+            Some((cur + dir * page).clamp(0, n as isize - 1) as usize)
+        } else {
+            None
+        };
+
         // Clamp selectable to the available width so long filenames clip
         // instead of widening the panel (which makes it horizontally scrollable).
         let sel_width = ImGui::GetContentRegionAvail().x;
         for (i, cartridge) in cartridges.iter().enumerate() {
             let name = CString::new(cartridge.file_name.clone()).unwrap();
+            let row_y = ImGui::GetCursorPosY();
             let sel_sz = ImVec2 { x: sel_width, y: 0f32 };
             if ImGui::Selectable(name.as_ptr() as _, false, 0, &sel_sz) {
                 *detail_game = Some(i);
@@ -1112,6 +1163,12 @@ unsafe fn render_left_panel(cartridges: &[CartridgePreview], hovered: &mut Optio
             }
             if ImGui::IsItemHovered(ImGuiHoveredFlags__ImGuiHoveredFlags_Default as _) {
                 *hovered = Some(i);
+            }
+            if target == Some(i) {
+                // Move the gamepad selection here (Selectable just submitted, so
+                // its rect feeds NavRectRel) and center the row in view.
+                ImGui::SetFocusID(ImGui::GetID(name.as_ptr() as _), (*ImGui::GetCurrentContext()).CurrentWindow);
+                ImGui::SetScrollFromPosY(row_y - ImGui::GetScrollY(), 0.5);
             }
         }
     }
