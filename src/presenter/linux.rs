@@ -300,6 +300,14 @@ impl Presenter {
     pub fn gl_version_suffix() -> &'static str {
         ""
     }
+
+    pub fn core_unlocked(&self) -> bool {
+        true
+    }
+
+    pub fn can_stream_screen(&self) -> bool {
+        false
+    }
 }
 
 impl UiBackend for Presenter {

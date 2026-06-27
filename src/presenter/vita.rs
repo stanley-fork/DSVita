@@ -42,6 +42,7 @@ pub const LOG_FILE: &str = "ux0:data/dsvita/log/log.txt";
 extern "C" {
     // pub fn sceRazorCpuPushMarkerWithHud(label: *const c_char, color: c_int, flags: c_int) -> c_int;
     // pub fn sceRazorCpuPopMarker() -> c_int;
+    pub fn udcd_uvc_dsvita_sendCustomFrame(data: *const c_void);
 }
 
 fn sce_common_dialog_set_magic_number(param: &mut SceCommonDialogParam) {
@@ -193,9 +194,17 @@ pub struct Presenter {
     key_mapping: [u32; NUM_KEYS],
     pressed_btn: u32,
     do_nothing_until_all_btns_released: bool,
+    core_unlocked: bool,
+    can_stream_screen: bool,
 }
 
 impl Presenter {
+    fn module_installed(name: &str) -> bool {
+        let name = CString::from_str(name).unwrap();
+        let search_unk = [0u32; 2];
+        unsafe { _vshKernelSearchModuleByName(name.as_ptr(), search_unk.as_ptr() as _) >= 0 }
+    }
+
     #[cold]
     pub fn new() -> Option<Self> {
         unsafe {
@@ -223,8 +232,8 @@ impl Presenter {
             vita_gl::vglInitExtended(0, PRESENTER_SCREEN_WIDTH as _, PRESENTER_SCREEN_HEIGHT as _, 70 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE);
 
             info_println!("Checking for kubridge");
-            let search_unk = [0u32; 2];
-            if _vshKernelSearchModuleByName(c"kubridge".as_ptr(), search_unk.as_ptr() as _) < 0 {
+
+            if !Self::module_installed("kubridge") {
                 let mut msg_param: SceMsgDialogUserMessageParam = mem::zeroed();
                 msg_param.buttonType = SCE_MSG_DIALOG_BUTTON_TYPE_OK as _;
                 msg_param.msg = c"Kubridge not installed, get version 0.3.1 from https://github.com/bythos14/kubridge/releases and put in under the *KERNEL section in config.txt!".as_ptr();
@@ -251,6 +260,7 @@ impl Presenter {
 
             sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_STOP);
 
+            let has_cap_unlocker = Self::module_installed("CapUnlocker");
             let mut instance = Presenter {
                 presenter_audio_out: PresenterAudioOut::new(),
                 presenter_audio_in: PresenterAudioIn::new(),
@@ -259,6 +269,8 @@ impl Presenter {
                 key_mapping: DEFAULT_KEY_MAPPING,
                 pressed_btn: 0,
                 do_nothing_until_all_btns_released: false,
+                core_unlocked: has_cap_unlocker,
+                can_stream_screen: has_cap_unlocker && Self::module_installed("udcd_uvc_dsvita"),
             };
 
             init_ui(&mut instance);
@@ -526,6 +538,14 @@ impl Presenter {
 
     pub fn gl_version_suffix() -> &'static str {
         vita_gl::VITA_GL_VERSION
+    }
+
+    pub fn core_unlocked(&self) -> bool {
+        self.core_unlocked
+    }
+
+    pub fn can_stream_screen(&self) -> bool {
+        self.can_stream_screen
     }
 }
 

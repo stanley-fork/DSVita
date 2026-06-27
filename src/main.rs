@@ -478,7 +478,8 @@ pub fn actual_main() {
             }));
             emu_unsafe.get_mut().gpu.set_gpu_renderer(NonNull::from(gpu_renderer.as_mut().unwrap()));
         }
-        emu_unsafe.get_mut().gpu.renderer.init();
+        let stream_to_screen = settings.stream_top_screen() && presenter.can_stream_screen();
+        emu_unsafe.get_mut().gpu.renderer.init(stream_to_screen);
 
         let presenter_audio_out = presenter.get_presenter_audio_out();
         let presenter_audio_in = presenter.get_presenter_audio_in();
@@ -525,11 +526,42 @@ pub fn actual_main() {
             })
             .unwrap();
 
+        let process_streams = if stream_to_screen {
+            let cpu_active_clone = cpu_active.clone();
+            Some(
+                thread::Builder::new()
+                    .name("process_streams".to_owned())
+                    .spawn(move || {
+                        #[cfg(target_os = "vita")]
+                        {
+                            set_thread_prio_affinity(ThreadPriority::High, &[ThreadAffinity::Core3]);
+                            let emu = unsafe { (emu_ptr as *mut Emu).as_mut_unchecked() };
+                            let cpu_active = cpu_active_clone;
+                            while cpu_active.load(Ordering::Relaxed) {
+                                emu.gpu.renderer.process_streams();
+                            }
+                        }
+                        info_println!("Stopped process streams");
+                    })
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+
         let cpu_active_clone = cpu_active.clone();
+        let core_unlocked = presenter.core_unlocked();
         let audio_out_thread = thread::Builder::new()
             .name("audio_out".to_owned())
             .spawn(move || {
-                set_thread_prio_affinity(ThreadPriority::Default, &[ThreadAffinity::Core0, ThreadAffinity::Core1]);
+                set_thread_prio_affinity(
+                    ThreadPriority::Default,
+                    if core_unlocked {
+                        &[ThreadAffinity::Core0, ThreadAffinity::Core1, ThreadAffinity::Core3]
+                    } else {
+                        &[ThreadAffinity::Core0, ThreadAffinity::Core1]
+                    },
+                );
                 let mut guest_buffer = HeapArrayU32::<{ SAMPLE_BUFFER_SIZE }>::default();
                 let mut audio_buffer = HeapArrayU32::<{ PRESENTER_AUDIO_OUT_BUF_SIZE }>::default();
                 let emu = unsafe { (emu_ptr as *mut Emu).as_mut_unchecked() };
@@ -673,6 +705,9 @@ pub fn actual_main() {
         cpu_active.store(false, Ordering::SeqCst);
         audio_out_thread.join().unwrap();
         audio_in_thread.join().unwrap();
+        if let Some(process_streams) = process_streams {
+            process_streams.join().unwrap();
+        }
         process_3d_thread.join().unwrap();
         save_thread.join().unwrap();
         gpu_renderer.set_quit(false);

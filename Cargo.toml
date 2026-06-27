@@ -71,9 +71,11 @@ vitasdk-sys = { version = "0.3.2", features = [
     "SceSysrootForKernel_stub",
     "SceTouch_stub",
     "SceVshBridge_stub",
+    "SceKernelModulemgr_stub",
 ] }
 vita_gl = { path = "vitaGL" }
 
+openssl-sys = "=0.9.111"
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "native-tls"] }
 
 [profile.release-debug]

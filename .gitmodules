@@ -22,3 +22,6 @@
 [submodule "rcheevos/rcheevos_src"]
 	path = rcheevos/rcheevos_src
 	url = https://github.com/RetroAchievements/rcheevos.git
+[submodule "vita-udcd-uvc"]
+	path = vita-udcd-uvc
+	url = https://github.com/Grarak/vita-udcd-uvc.git

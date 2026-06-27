@@ -27,9 +27,9 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
 use std::thread::Thread;
 use std::time::{Duration, Instant};
+use std::{ptr, thread};
 
 pub struct GpuRendererCommon {
     pub mem_buf: GpuMemBuf,
@@ -47,6 +47,50 @@ impl GpuRendererCommon {
     }
 }
 
+#[derive(Default)]
+struct GpuStreamInner {
+    sample_to: usize,
+    sample_from: usize,
+    ptrs: [*const u8; 2],
+}
+
+struct GpuStream {
+    fbo: [GpuFbo; 2],
+    query: GLuint,
+    mutex: Mutex<GpuStreamInner>,
+    ready_condvar: Condvar,
+}
+
+#[cfg(target_os = "vita")]
+impl GpuStream {
+    fn new() -> GpuStream {
+        GpuStream {
+            fbo: crate::utils::array_init!({ unsafe {
+                let mut tex = 0;
+                gl::GenTextures(1, &mut tex);
+                gl::BindTexture(gl::TEXTURE_2D, tex);
+                Presenter::gl_tex_image_2d_rgba5(PRESENTER_SCREEN_WIDTH as _, PRESENTER_SCREEN_HEIGHT as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as _);
+                GpuFbo::from_tex(PRESENTER_SCREEN_WIDTH as _, PRESENTER_SCREEN_HEIGHT as _, false, false, tex).unwrap()
+            }}; 2),
+            query: unsafe {
+                let mut query = 0;
+                gl::GenQueries(1, &mut query);
+                query
+            },
+            mutex: Mutex::new(GpuStreamInner::default()),
+            ready_condvar: Condvar::new(),
+        }
+    }
+
+    fn init(&mut self) {
+        *self.mutex.lock().unwrap() = GpuStreamInner::default();
+    }
+}
+
 pub struct GpuRenderer {
     renderer_regs_2d_shared: Gpu2DRenderRegsShared,
     renderer_2d: Gpu2DRenderer,
@@ -60,6 +104,10 @@ pub struct GpuRenderer {
     capture_fbo: GpuFbo,
     capture_mem: HeapArrayU8<{ vram::BANK_A_SIZE * 4 }>,
     capture_query: GLuint,
+
+    #[cfg(target_os = "vita")]
+    stream: GpuStream,
+    stream_top_screen: bool,
 
     merge_program: GLuint,
     merge_width_coefficient_uniform: GLint,
@@ -181,6 +229,10 @@ impl GpuRenderer {
             capture_mem: HeapArrayU8::default(),
             capture_query,
 
+            #[cfg(target_os = "vita")]
+            stream: GpuStream::new(),
+            stream_top_screen: false,
+
             merge_program: gpu_programs.merge,
             merge_width_coefficient_uniform,
             merge_alpha_uniform,
@@ -216,7 +268,7 @@ impl GpuRenderer {
         }
     }
 
-    pub fn init(&mut self) {
+    pub fn init(&mut self, stream_top_screen: bool) {
         self.renderer_regs_2d_shared.init();
         self.renderer_3d.init();
         self.common.mem_buf.init();
@@ -227,6 +279,9 @@ impl GpuRenderer {
         self.sample_2d = true;
         self.ready_2d = false;
         self.rendering_3d = false;
+        #[cfg(target_os = "vita")]
+        self.stream.init();
+        self.stream_top_screen = stream_top_screen;
     }
 
     pub fn on_scanline(&mut self, inner_a: &mut Gpu2DRegisters, inner_b: &mut Gpu2DRegisters, line: u8) {
@@ -400,6 +455,127 @@ impl GpuRenderer {
         gl::UseProgram(0);
     }
 
+    #[inline(never)]
+    unsafe fn show_retroachievements(&mut self, ra_context: &RaContext) {
+        let ra_event = ra_context.event.lock().unwrap();
+        let (event, instant) = ra_event.deref();
+        let elapsed = instant.elapsed();
+        const EVENT_DURATION_SECS: u8 = 5;
+        if elapsed <= Duration::from_secs(EVENT_DURATION_SECS as _) && !event.title.is_empty() {
+            if self.ra_last_event_instant != *instant {
+                if let Some(texture) = self.ra_badge_texture {
+                    gl::DeleteTextures(1, &texture);
+                    self.ra_badge_texture = None;
+                }
+
+                if let Some((badge_data, info)) = &event.badge {
+                    if info.bit_depth == BitDepth::Eight {
+                        match info.color_type {
+                            ColorType::Rgb | ColorType::Rgba => {
+                                let format = if info.color_type == ColorType::Rgb { gl::RGB } else { gl::RGBA };
+                                let mut texture = 0;
+                                gl::GenTextures(1, &mut texture);
+                                gl::BindTexture(gl::TEXTURE_2D, texture);
+                                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as _);
+                                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as _);
+                                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as _);
+                                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as _);
+                                gl::TexImage2D(
+                                    gl::TEXTURE_2D,
+                                    0,
+                                    format as _,
+                                    info.width as _,
+                                    info.height as _,
+                                    0,
+                                    format,
+                                    gl::UNSIGNED_BYTE,
+                                    badge_data.as_ptr() as _,
+                                );
+                                self.ra_badge_texture = Some(texture);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                self.ra_last_event_instant = *instant;
+            }
+
+            let elapsed_ms = elapsed.as_millis() as u16 as f32;
+            let alpha = 1.0 - (elapsed_ms - (EVENT_DURATION_SECS as f32 * 1000.0 / 2.0)).abs() / (EVENT_DURATION_SECS as f32 * 1000.0 / 2.0);
+
+            const OFFSET_X: u32 = 0;
+            const OFFSET_Y: u32 = 416;
+            const WIDTH: u32 = 500;
+            const HEIGHT: u32 = PRESENTER_SCREEN_HEIGHT - OFFSET_Y;
+            gl::Viewport(OFFSET_X as _, OFFSET_Y as _, WIDTH as _, HEIGHT as _);
+
+            gl::Enable(gl::BLEND);
+            gl::BlendEquation(gl::FUNC_ADD);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+
+            gl::UseProgram(self.ra_program);
+
+            gl::Uniform1f(self.ra_alpha_loc, alpha);
+
+            const BADGE_NORMALIZED_WIDTH: f32 = HEIGHT as f32 / WIDTH as f32 * 2.0;
+            #[rustfmt::skip]
+                    const VERTICES: [f32; 8 * 2] = [
+                        -1.0, 1.0,
+                        -1.0 + BADGE_NORMALIZED_WIDTH, 1.0,
+                        -1.0 + BADGE_NORMALIZED_WIDTH, -1.0,
+                        -1.0, -1.0,
+
+                        -1.0 + BADGE_NORMALIZED_WIDTH, 1.0,
+                        1.0, 1.0,
+                        1.0, -1.0,
+                        -1.0 + BADGE_NORMALIZED_WIDTH, -1.0,
+                    ];
+
+            gl::EnableVertexAttribArray(0);
+            gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 0, VERTICES.as_ptr() as _);
+
+            let tex_factor = match self.ra_badge_texture {
+                None => 0.0,
+                Some(tex) => {
+                    gl::ActiveTexture(gl::TEXTURE0);
+                    gl::BindTexture(gl::TEXTURE_2D, tex);
+                    1.0
+                }
+            };
+
+            #[rustfmt::skip]
+                    let tex_coords_factor: [f32; 8 * 3] = [
+                        0.0, 0.0, tex_factor,
+                        1.0, 0.0, tex_factor,
+                        1.0, 1.0, tex_factor,
+                        0.0, 1.0, tex_factor,
+
+                        0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0,
+                    ];
+
+            gl::EnableVertexAttribArray(1);
+            gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, 0, tex_coords_factor.as_ptr() as _);
+
+            const INDICES: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+            gl::DrawElements(gl::TRIANGLES, INDICES.len() as _, gl::UNSIGNED_SHORT, INDICES.as_ptr() as _);
+
+            self.gl_glyph.draw(
+                format!("{}\n{}", event.title, event.description),
+                (WIDTH as f32, HEIGHT as f32),
+                (-200.0, 0.0),
+                40.0,
+                Layout::default().h_align(HorizontalAlign::Left).v_align(VerticalAlign::Center),
+                alpha,
+            );
+
+            gl::Disable(gl::BLEND);
+        }
+    }
+
     pub fn render_loop(
         &mut self,
         presenter: &mut Presenter,
@@ -519,6 +695,44 @@ impl GpuRenderer {
                 gl::UseProgram(0);
             }
 
+            #[cfg(target_os = "vita")]
+            let stream_sample_index = {
+                let mut inner = self.stream.mutex.lock().unwrap();
+                let index = inner.sample_to;
+                if !inner.ptrs[index].is_null() {
+                    None
+                } else {
+                    inner.sample_to ^= 1;
+                    Some(index)
+                }
+            };
+
+            #[cfg(target_os = "vita")]
+            if let Some(index) = stream_sample_index {
+                gl::BindFramebuffer(gl::FRAMEBUFFER, self.stream.fbo[index].fbo);
+                gl::Viewport(0, 0, PRESENTER_SCREEN_WIDTH as _, PRESENTER_SCREEN_HEIGHT as _);
+                gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+
+                gl::UseProgram(self.capture_program);
+
+                gl::ActiveTexture(gl::TEXTURE0);
+                gl::BindTexture(gl::TEXTURE_2D, if self.common.pow_cnt1[0].display_swap() { a_fbo_color } else { b_fbo_color });
+
+                gl::Uniform2f(self.capture_size_scalers_uniform, 1.0, 1.0);
+
+                const COORDS: [f32; 4 * 4] = [-1f32, 1f32, 0f32, 0f32, 1f32, 1f32, 1f32, 0f32, 1f32, -1f32, 1f32, 1f32, -1f32, -1f32, 0f32, 1f32];
+
+                gl::EnableVertexAttribArray(0);
+                gl::VertexAttribPointer(0, 4, gl::FLOAT, gl::FALSE, 0, COORDS.as_ptr() as _);
+                gl::BeginQuery(gl::ANY_SAMPLES_PASSED, self.stream.query);
+                gl::DrawArrays(gl::TRIANGLE_FAN, 0, 4);
+                gl::EndQuery(gl::ANY_SAMPLES_PASSED);
+
+                gl::BindTexture(gl::TEXTURE_2D, 0);
+                gl::UseProgram(0);
+            }
+
             gl::BindFramebuffer(gl::FRAMEBUFFER, self.final_fbo.fbo);
             gl::Viewport(0, 0, PRESENTER_SCREEN_WIDTH as _, PRESENTER_SCREEN_HEIGHT as _);
             gl::ClearColor(0.0, 0.0, 0.0, 0.0);
@@ -593,123 +807,7 @@ impl GpuRenderer {
             }
 
             if unlikely(settings.retroachievements()) {
-                let ra_event = ra_context.event.lock().unwrap();
-                let (event, instant) = ra_event.deref();
-                let elapsed = instant.elapsed();
-                const EVENT_DURATION_SECS: u8 = 5;
-                if elapsed <= Duration::from_secs(EVENT_DURATION_SECS as _) && !event.title.is_empty() {
-                    if self.ra_last_event_instant != *instant {
-                        if let Some(texture) = self.ra_badge_texture {
-                            gl::DeleteTextures(1, &texture);
-                            self.ra_badge_texture = None;
-                        }
-
-                        if let Some((badge_data, info)) = &event.badge {
-                            if info.bit_depth == BitDepth::Eight {
-                                match info.color_type {
-                                    ColorType::Rgb | ColorType::Rgba => {
-                                        let format = if info.color_type == ColorType::Rgb { gl::RGB } else { gl::RGBA };
-                                        let mut texture = 0;
-                                        gl::GenTextures(1, &mut texture);
-                                        gl::BindTexture(gl::TEXTURE_2D, texture);
-                                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as _);
-                                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as _);
-                                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as _);
-                                        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as _);
-                                        gl::TexImage2D(
-                                            gl::TEXTURE_2D,
-                                            0,
-                                            format as _,
-                                            info.width as _,
-                                            info.height as _,
-                                            0,
-                                            format,
-                                            gl::UNSIGNED_BYTE,
-                                            badge_data.as_ptr() as _,
-                                        );
-                                        self.ra_badge_texture = Some(texture);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        self.ra_last_event_instant = *instant;
-                    }
-
-                    let elapsed_ms = elapsed.as_millis() as u16 as f32;
-                    let alpha = 1.0 - (elapsed_ms - (EVENT_DURATION_SECS as f32 * 1000.0 / 2.0)).abs() / (EVENT_DURATION_SECS as f32 * 1000.0 / 2.0);
-
-                    const OFFSET_X: u32 = 0;
-                    const OFFSET_Y: u32 = 416;
-                    const WIDTH: u32 = 500;
-                    const HEIGHT: u32 = PRESENTER_SCREEN_HEIGHT - OFFSET_Y;
-                    gl::Viewport(OFFSET_X as _, OFFSET_Y as _, WIDTH as _, HEIGHT as _);
-
-                    gl::Enable(gl::BLEND);
-                    gl::BlendEquation(gl::FUNC_ADD);
-                    gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-
-                    gl::UseProgram(self.ra_program);
-
-                    gl::Uniform1f(self.ra_alpha_loc, alpha);
-
-                    const BADGE_NORMALIZED_WIDTH: f32 = HEIGHT as f32 / WIDTH as f32 * 2.0;
-                    #[rustfmt::skip]
-                    const VERTICES: [f32; 8 * 2] = [
-                        -1.0, 1.0,
-                        -1.0 + BADGE_NORMALIZED_WIDTH, 1.0,
-                        -1.0 + BADGE_NORMALIZED_WIDTH, -1.0,
-                        -1.0, -1.0,
-
-                        -1.0 + BADGE_NORMALIZED_WIDTH, 1.0,
-                        1.0, 1.0,
-                        1.0, -1.0,
-                        -1.0 + BADGE_NORMALIZED_WIDTH, -1.0,
-                    ];
-
-                    gl::EnableVertexAttribArray(0);
-                    gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 0, VERTICES.as_ptr() as _);
-
-                    let tex_factor = match self.ra_badge_texture {
-                        None => 0.0,
-                        Some(tex) => {
-                            gl::ActiveTexture(gl::TEXTURE0);
-                            gl::BindTexture(gl::TEXTURE_2D, tex);
-                            1.0
-                        }
-                    };
-
-                    #[rustfmt::skip]
-                    let tex_coords_factor: [f32; 8 * 3] = [
-                        0.0, 0.0, tex_factor,
-                        1.0, 0.0, tex_factor,
-                        1.0, 1.0, tex_factor,
-                        0.0, 1.0, tex_factor,
-
-                        0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0,
-                        0.0, 0.0, 0.0,
-                    ];
-
-                    gl::EnableVertexAttribArray(1);
-                    gl::VertexAttribPointer(1, 3, gl::FLOAT, gl::FALSE, 0, tex_coords_factor.as_ptr() as _);
-
-                    const INDICES: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
-                    gl::DrawElements(gl::TRIANGLES, INDICES.len() as _, gl::UNSIGNED_SHORT, INDICES.as_ptr() as _);
-
-                    self.gl_glyph.draw(
-                        format!("{}\n{}", event.title, event.description),
-                        (WIDTH as f32, HEIGHT as f32),
-                        (-200.0, 0.0),
-                        40.0,
-                        Layout::default().h_align(HorizontalAlign::Left).v_align(VerticalAlign::Center),
-                        alpha,
-                    );
-
-                    gl::Disable(gl::BLEND);
-                }
+                self.show_retroachievements(ra_context);
             }
 
             if !pause {
@@ -771,6 +869,18 @@ impl GpuRenderer {
                 }
             }
 
+            #[cfg(target_os = "vita")]
+            if let Some(index) = stream_sample_index {
+                let mut query_result = 0;
+                gl::GetQueryObjectiv(self.stream.query, gl::QUERY_RESULT, &mut query_result);
+
+                gl::BindTexture(gl::TEXTURE_2D, self.stream.fbo[index].color);
+                let ptr = Presenter::gl_get_tex_ptr();
+
+                self.stream.mutex.lock().unwrap().ptrs[index] = ptr;
+                self.stream.ready_condvar.notify_one();
+            }
+
             let render_time_diff = Instant::now().duration_since(render_time_start);
 
             self.render_time_sum += render_time_diff.as_micros() as u32;
@@ -783,6 +893,28 @@ impl GpuRenderer {
         }
     }
 
+    #[inline(never)]
+    #[cfg(target_os = "vita")]
+    pub fn process_streams(&mut self) {
+        let (index, ptr) = {
+            let lock = self.stream.mutex.lock().unwrap();
+            let (mut inner, result) = self
+                .stream
+                .ready_condvar
+                .wait_timeout_while(lock, Duration::from_millis(500), |inner| inner.ptrs[inner.sample_from].is_null())
+                .unwrap();
+            if result.timed_out() {
+                return;
+            }
+            inner.sample_from ^= 1;
+            (inner.sample_from, inner.ptrs[inner.sample_from])
+        };
+
+        unsafe { crate::presenter::udcd_uvc_dsvita_sendCustomFrame(ptr as _) };
+        self.stream.mutex.lock().unwrap().ptrs[index] = ptr::null();
+    }
+
+    #[inline(never)]
     pub fn process_3d_loop(&mut self) {
         {
             let rendering = self.rendering.lock().unwrap();

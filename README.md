@@ -87,6 +87,11 @@ $ RUSTC=<path to compiled rustc> LIBCLANG_PATH=<path to llvm-18 library> RUSTFLA
 
 Currently we are also stuck with an older rust compiler, which still uses llvm-21, later versions of llvm seem to cause performance regressions.
 
+### Stream top screen over udcd-uvc (experimental)
+- Install (replace your existing udcd-uvc install) https://github.com/Grarak/vita-udcd-uvc/releases/tag/1.0 under the `*KERNEL` section of your config.txt
+- Install https://github.com/GrapheneCt/CapUnlocker
+- Enable the stream top screen setting
+
 ## Credits
 
 - [NooDS](https://github.com/Hydr8gon/NooDS) was used as reference. A lot of code was taken from there.

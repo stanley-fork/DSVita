@@ -353,6 +353,24 @@ fn main() {
         println!("cargo:rustc-link-lib=static=kubridge_stub_dsvita");
     }
 
+    {
+        let udcd_uvc_path = PathBuf::from("vita-udcd-uvc");
+        let udcd_uvc_out = out_path.join("udcd_uvc");
+        Command::new("cmake")
+            .arg("-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
+            .arg("-B")
+            .arg(&udcd_uvc_out)
+            .arg("-S")
+            .arg(&udcd_uvc_path)
+            .status()
+            .unwrap();
+        Command::new("cmake").arg("--build").arg(&udcd_uvc_out).status().unwrap();
+
+        println!("cargo:rerun-if-changed={}", udcd_uvc_path.to_str().unwrap());
+        println!("cargo:rustc-link-search=native={}", fs::canonicalize(udcd_uvc_out).unwrap().to_str().unwrap());
+        println!("cargo:rustc-link-lib=static=udcd_uvc_dsvita_stub");
+    }
+
     if is_profiling() {
         let gprof_out = out_path.join("vita-gprof");
         Command::new("cmake")
@@ -369,4 +387,6 @@ fn main() {
         println!("cargo:rustc-link-search=native={}", fs::canonicalize(gprof_out).unwrap().to_str().unwrap());
         println!("cargo:rustc-link-lib=static=vitagprof");
     }
+
+    println!("cargo:rustc-link-search=native={}", fs::canonicalize(PathBuf::from("./")).unwrap().to_str().unwrap());
 }

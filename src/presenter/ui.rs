@@ -14,11 +14,13 @@ use crate::presenter::{cjk_font, default_key_binding, show_controls_create_setti
 use crate::ra_context::RaContext;
 use crate::screen_layouts::{CustomLayout, ScreenLayouts};
 use crate::screen_overlays;
-use crate::settings::{SettingValue, Settings, SettingsConfig, SETTING_GROUPS};
+use crate::settings::{SettingGroup, SettingValue, Settings, SettingsConfig};
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::{fs, mem, ptr};
+use strum::IntoEnumIterator;
+
 pub trait UiBackend {
     fn init(&mut self);
     fn new_frame(&mut self) -> bool;
@@ -77,10 +79,10 @@ unsafe fn cancel_pressed() -> bool {
 /// `SETTING_GROUPS`. Sets `*active` to the clicked tab index.
 unsafe fn settings_tab_bar(active: &mut usize) {
     let spacing = (*ImGui::GetStyle()).ItemSpacing.x;
-    let n = SETTING_GROUPS.len() as f32;
+    let n = SettingGroup::iter().len() as f32;
     let total = ImGui::GetContentRegionAvail().x;
     let w = (total - spacing * (n - 1.0)) / n;
-    for (i, (name, _)) in SETTING_GROUPS.iter().enumerate() {
+    for (i, group) in SettingGroup::iter().enumerate() {
         if i > 0 {
             ImGui::SameLine(0.0, -1.0);
         }
@@ -88,7 +90,7 @@ unsafe fn settings_tab_bar(active: &mut usize) {
         if is_active {
             ImGui::PushStyleColor(ImGuiCol__ImGuiCol_Button as _, 0xFFCC8844u32);
         }
-        let label = CString::new(*name).unwrap();
+        let label = CString::from_str(group.into()).unwrap();
         let sz = ImVec2 { x: w, y: 0.0 };
         if ImGui::Button(label.as_ptr() as _, &sz) {
             *active = i;
@@ -129,7 +131,7 @@ unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab:
     };
     let mut new_desc = "";
     if ImGui::BeginChild(c"##settings_scroll".as_ptr() as _, &child_sz, false, 0) {
-        new_desc = render_tab_settings(settings_config, *active_tab, only_runtime);
+        new_desc = render_tab_settings(settings_config, SettingGroup::iter().skip(*active_tab).next().unwrap(), only_runtime);
     }
     ImGui::EndChild();
     *active_desc = new_desc;
@@ -512,17 +514,15 @@ unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirt
 
 /// Renders the active tab's settings, returning the description of the
 /// focused/hovered setting (empty if none).
-unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, tab: usize, only_runtime: bool) -> &'static str {
-    let (_, indices) = SETTING_GROUPS[tab];
+unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, group: SettingGroup, only_runtime: bool) -> &'static str {
     let all = settings_config.settings.get_all_mut();
     let mut active_desc = "";
-    for &index in indices {
-        let i = index as usize;
-        if only_runtime && !all[i].runtime {
+    for (i, setting) in all.iter_mut().enumerate() {
+        if setting.group != group || (only_runtime && !setting.runtime) {
             continue;
         }
-        if render_setting(&mut all[i], i, &mut settings_config.dirty, 50f32) {
-            active_desc = all[i].description;
+        if render_setting(setting, i, &mut settings_config.dirty, 50f32) {
+            active_desc = setting.description;
         }
     }
     active_desc
