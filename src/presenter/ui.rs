@@ -101,48 +101,33 @@ unsafe fn settings_tab_bar(active: &mut usize) {
     }
 }
 
-/// Renders the tabbed settings body: the category tab bar, the active tab's
-/// settings in a scroll child, then a pinned description area showing the
-/// focused/hovered setting's description. `button_reserve` is extra height to
-/// keep free below for a caller button (e.g. Save); 0 if none.
-///
-/// The description is pinned (not inline under each setting) because gamepad nav
-/// only scrolls far enough to reveal the focused control — text rendered below
-/// the last control would otherwise be unreachable.
-unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab: &mut usize, only_runtime: bool, button_reserve: f32, active_desc: &mut &'static str) {
+/// Renders the tabbed settings body: the category tab bar and the active tab's
+/// settings (each with its own inline description) in a scroll child.
+/// `button_reserve` is extra height to keep free below for a caller button
+/// (e.g. Save); 0 if none.
+unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab: &mut usize, only_runtime: bool, button_reserve: f32) {
     settings_tab_bar(active_tab);
     ImGui::Separator();
 
-    // Reserve only as much room as the (previous frame's) active description
-    // actually needs — one-frame lag — so the scroll list fills the rest instead
-    // of always reserving the worst-case footer height.
-    let footer_height = if active_desc.is_empty() {
-        0.0
-    } else {
-        let avail_w = ImGui::GetContentRegionAvail().x;
-        let prev = CString::new(*active_desc).unwrap();
-        let text_h = ImGui::CalcTextSize(prev.as_ptr() as _, ptr::null(), false, avail_w).y;
-        text_h + (*ImGui::GetStyle()).ItemSpacing.y * 3.0
-    };
-
-    let child_sz = ImVec2 {
-        x: 0f32,
-        y: -(footer_height + button_reserve),
-    };
-    let mut new_desc = "";
+    let child_sz = ImVec2 { x: 0f32, y: -button_reserve };
     if ImGui::BeginChild(c"##settings_scroll".as_ptr() as _, &child_sz, false, 0) {
-        new_desc = render_tab_settings(settings_config, SettingGroup::iter().skip(*active_tab).next().unwrap(), only_runtime);
+        // Invisible nav-stops above the first / below the last setting. Gamepad
+        // nav only scrolls far enough to reveal the focused item; since a
+        // setting's control sits at the bottom of its (taller) description block,
+        // focusing the first/last control alone never exposes the very top/bottom
+        // of the list. These give nav something to land on past either end.
+        nav_scroll_stop(c"##top_stop");
+        render_tab_settings(settings_config, SettingGroup::iter().skip(*active_tab).next().unwrap(), only_runtime);
+        nav_scroll_stop(c"##bottom_stop");
     }
     ImGui::EndChild();
-    *active_desc = new_desc;
+}
 
-    if !new_desc.is_empty() {
-        ImGui::Separator();
-        let description = CString::new(new_desc).unwrap();
-        ImGui::PushTextWrapPos(0f32);
-        ImGui::TextDisabled(description.as_ptr() as _);
-        ImGui::PopTextWrapPos();
-    }
+/// A zero-height, full-width invisible button that gamepad nav can focus, used to
+/// let nav scroll past the first/last real control to the list's edge.
+unsafe fn nav_scroll_stop(id: &std::ffi::CStr) {
+    let sz = ImVec2 { x: ImGui::GetContentRegionAvail().x.max(1f32), y: 1f32 };
+    ImGui::InvisibleButton(id.as_ptr() as _, &sz);
 }
 
 /// True if the cancel/back press should close the current overlay rather than
@@ -454,35 +439,62 @@ pub fn init_ui(ui_backend: &mut impl UiBackend) {
         );
     }
 }
-/// Renders one setting row (title + control). Returns true if the control is
-/// currently focused or hovered, so the caller can surface its description.
-unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirty: &mut bool, buttons_width: f32) -> bool {
+/// Renders one setting: the title, its description wrapped on the left, and the
+/// control bottom-aligned to the right of the description, then a separator.
+///
+/// The control sits at the bottom of the description (rather than the description
+/// being pinned in a footer) so gamepad nav, which only scrolls far enough to
+/// reveal the focused control, always brings the whole description into view too.
+unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirty: &mut bool, buttons_width: f32) {
+    const COMBO_WIDTH: f32 = 200f32;
+
     let title = CString::new(setting.title).unwrap();
     ImGui::Text(title.as_ptr() as _);
-    ImGui::SameLine(0f32, -1f32);
-    ImGui::PushID3(id as _);
 
+    let style = &*ImGui::GetStyle();
+    let control_w = match setting.value {
+        SettingValue::Bool(_) => buttons_width,
+        SettingValue::List(_) => COMBO_WIDTH,
+    };
+    let region_x = ImGui::GetCursorPosX();
+    let avail = ImGui::GetContentRegionAvail().x;
+    let desc_top = ImGui::GetCursorPosY();
+
+    // Description on the left, wrapped so it never runs under the control column.
+    if !setting.description.is_empty() {
+        let wrap = region_x + (avail - control_w - style.ItemSpacing.x).max(1f32);
+        ImGui::PushTextWrapPos(wrap);
+        let description = CString::new(setting.description).unwrap();
+        ImGui::TextDisabled(description.as_ptr() as _);
+        ImGui::PopTextWrapPos();
+    }
+    let desc_bottom = ImGui::GetCursorPosY();
+
+    // Bottom-align the control to the last line of the description.
+    let control_h = ImGui::GetFrameHeight();
+    let control_y = (desc_bottom - control_h).max(desc_top);
+    ImGui::SetCursorPosX(region_x + avail - control_w);
+    ImGui::SetCursorPosY(control_y);
+
+    ImGui::PushID3(id as _);
     match &mut setting.value {
         SettingValue::Bool(_) => {
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - buttons_width);
             let value = CString::new(setting.value.to_string()).unwrap();
-            let sz = ImVec2 { x: buttons_width, y: 0f32 };
+            let sz = ImVec2 { x: control_w, y: 0f32 };
             if ImGui::Button(value.as_ptr() as _, &sz) {
                 setting.value.next();
                 *dirty = true;
             }
         }
         SettingValue::List(inner) => {
-            const COMBO_WIDTH: f32 = 200f32;
             if inner.selection >= inner.values.len() {
                 inner.selection = 0;
             }
             let value = CString::from_str(&inner.values[inner.selection]).unwrap();
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - COMBO_WIDTH);
             let id = CString::new(format!("##{id}_list")).unwrap();
-            // Constrain the combo to COMBO_WIDTH so it doesn't overrun the window
+            // Constrain the combo to control_w so it doesn't overrun the window
             // edge (which would make the window horizontally scrollable).
-            ImGui::PushItemWidth(COMBO_WIDTH);
+            ImGui::PushItemWidth(control_w);
             if ImGui::BeginCombo(id.as_ptr() as _, value.as_ptr() as _, 0) {
                 for (j, val) in inner.values.iter().enumerate() {
                     let is_selected = j == inner.selection;
@@ -501,31 +513,24 @@ unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirt
             ImGui::PopItemWidth();
         }
     }
-
     ImGui::PopID();
 
-    // Captured before the trailing Dummy so it refers to the control item.
-    let active = ImGui::IsItemHovered(0) || ImGui::IsItemFocused();
-
-    let sz = ImVec2 { x: 0f32, y: 8f32 };
-    ImGui::Dummy(&sz);
-    active
+    // Drop below whichever of description / control reaches lower, then divide.
+    ImGui::SetCursorPosY(desc_bottom.max(control_y + control_h));
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
 }
 
-/// Renders the active tab's settings, returning the description of the
-/// focused/hovered setting (empty if none).
-unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, group: SettingGroup, only_runtime: bool) -> &'static str {
+/// Renders the active tab's settings.
+unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, group: SettingGroup, only_runtime: bool) {
     let all = settings_config.settings.get_all_mut();
-    let mut active_desc = "";
     for (i, setting) in all.iter_mut().enumerate() {
         if setting.group != group || (only_runtime && !setting.runtime) {
             continue;
         }
-        if render_setting(setting, i, &mut settings_config.dirty, 50f32) {
-            active_desc = setting.description;
-        }
+        render_setting(setting, i, &mut settings_config.dirty, 50f32);
     }
-    active_desc
 }
 unsafe fn render_global_settings_overlay(
     show: &mut bool,
@@ -902,7 +907,6 @@ pub fn show_main_menu(
         let mut detail_game: Option<usize> = None;
         let mut active_tab: usize = 0;
         let mut detail_overlay_focused = true;
-        let mut detail_active_desc: &'static str = "";
         let mut launched = false;
 
         // Back-nav focus tracking for the stacked global-settings overlays, so
@@ -964,7 +968,6 @@ pub fn show_main_menu(
                 &mut detail_game,
                 &mut active_tab,
                 &mut detail_overlay_focused,
-                &mut detail_active_desc,
                 &mut launched,
             );
 
@@ -1139,7 +1142,6 @@ unsafe fn render_game_detail_overlay(
     detail_game: &mut Option<usize>,
     active_tab: &mut usize,
     overlay_focused: &mut bool,
-    active_desc: &mut &'static str,
     launched: &mut bool,
 ) {
     let Some(i) = *detail_game else {
@@ -1176,10 +1178,10 @@ unsafe fn render_game_detail_overlay(
     ImGui::Spacing();
     settings_configs[i].settings.populate_screen_layouts(screen_layouts);
     settings_configs[i].settings.populate_controls(&global_settings.default_control, &global_settings.custom_controls);
-    render_settings_tabs(&mut settings_configs[i], active_tab, false, ImGui::GetFrameHeightWithSpacing(), active_desc);
+    render_settings_tabs(&mut settings_configs[i], active_tab, false, ImGui::GetFrameHeightWithSpacing());
 
-    // Pin the Save button to the bottom of the overlay; the description footer
-    // above it has a variable height, so don't let the button float up with it.
+    // Pin the Save button to the bottom of the overlay so it never floats up
+    // with the scroll list above it.
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - (*ImGui::GetStyle()).WindowPadding.y - ImGui::GetFrameHeight());
 
     let settings_config = &mut settings_configs[i];
@@ -1231,7 +1233,6 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
     let mut settings_config = SettingsConfig::from(settings.clone());
     let mut active_tab: usize = 0;
     let mut overlay_focused = true;
-    let mut active_desc: &'static str = "";
     loop {
         unsafe {
             gl::BindFramebuffer(gl::FRAMEBUFFER, 0);
@@ -1310,7 +1311,7 @@ pub fn show_pause_menu(ui_backend: &mut impl UiBackend, gpu_renderer: &GpuRender
             if return_value.is_none() {
                 if pressed_settings {
                     if begin_fullscreen_overlay(c"##details") {
-                        render_settings_tabs(&mut settings_config, &mut active_tab, true, 0f32, &mut active_desc);
+                        render_settings_tabs(&mut settings_config, &mut active_tab, true, 0f32);
                         // Back/Esc steps out of the settings child first; only
                         // closes the settings menu when at the tab level.
                         if back_closes_overlay(overlay_focused) {
