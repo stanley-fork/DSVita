@@ -300,11 +300,13 @@ impl Texture3D {
             let mut colors: [u16; 16] = MaybeUninit::uninit().assume_init();
 
             for j in 0..16 {
-                let pal_index = utils::read_from_mem::<u8>(mem_refs.tex_rear_plane_image.as_ref(), vram_addr + i + j as u32) as u32;
+                let offset = min(vram_addr + i + j as u32, mem_refs.tex_rear_plane_image.len() as u32 - 1);
+                let pal_index = utils::read_from_mem::<u8>(mem_refs.tex_rear_plane_image.as_ref(), offset) as u32;
                 if self.metadata.color_0_transparent() && pal_index == 0 {
                     colors[j] = 0;
                 } else {
-                    colors[j] = utils::read_from_mem::<u16>(mem_refs.tex_pal.as_ref(), pal_addr + (pal_index << 1)) | (1 << 15);
+                    let offset = min(pal_addr + (pal_index << 1), mem_refs.tex_pal.len() as u32 - 2);
+                    colors[j] = utils::read_from_mem::<u16>(mem_refs.tex_pal.as_ref(), offset) | (1 << 15);
                 }
             }
 
