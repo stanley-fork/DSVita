@@ -4,6 +4,47 @@ use ini::Ini;
 use std::path::PathBuf;
 use std::{fs, io};
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub enum MenuLayout {
+    List,
+    Tiles,
+    Carousel,
+}
+
+impl MenuLayout {
+    fn from_ini(value: &str) -> Self {
+        match value {
+            "tiles" => MenuLayout::Tiles,
+            "carousel" => MenuLayout::Carousel,
+            _ => MenuLayout::List,
+        }
+    }
+
+    fn to_ini(self) -> &'static str {
+        match self {
+            MenuLayout::List => "list",
+            MenuLayout::Tiles => "tiles",
+            MenuLayout::Carousel => "carousel",
+        }
+    }
+
+    pub fn label(self) -> &'static std::ffi::CStr {
+        match self {
+            MenuLayout::List => c"Menu layout: List",
+            MenuLayout::Tiles => c"Menu layout: Tiles",
+            MenuLayout::Carousel => c"Menu layout: Carousel",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            MenuLayout::List => MenuLayout::Tiles,
+            MenuLayout::Tiles => MenuLayout::Carousel,
+            MenuLayout::Carousel => MenuLayout::List,
+        }
+    }
+}
+
 pub struct GlobalSettings {
     dir: PathBuf,
     pub custom_layouts: Vec<CustomLayout>,
@@ -11,7 +52,7 @@ pub struct GlobalSettings {
     pub custom_controls: Vec<KeyBinding>,
     pub ra_username: String,
     pub ra_token: String,
-    pub tiled_menu: bool,
+    pub menu_layout: MenuLayout,
 }
 
 impl GlobalSettings {
@@ -46,7 +87,7 @@ impl GlobalSettings {
 
         let mut ra_username = "".to_string();
         let mut ra_token = "".to_string();
-        let mut tiled_menu = false;
+        let mut menu_layout = MenuLayout::List;
         let settings_path = dir.join("settings.ini");
         if let Ok(ini) = Ini::load_from_file(settings_path) {
             if let Some(props) = ini.section(Some("ra")) {
@@ -58,7 +99,9 @@ impl GlobalSettings {
                 }
             }
             if let Some(props) = ini.section(Some("menu")) {
-                tiled_menu = props.get("tiled") == Some("true");
+                if let Some(layout) = props.get("layout") {
+                    menu_layout = MenuLayout::from_ini(layout);
+                }
             }
         }
 
@@ -69,7 +112,7 @@ impl GlobalSettings {
             custom_controls,
             ra_username,
             ra_token,
-            tiled_menu,
+            menu_layout,
         })
     }
 
@@ -139,8 +182,8 @@ impl GlobalSettings {
         self.flush_settings();
     }
 
-    pub fn set_tiled_menu(&mut self, value: bool) {
-        self.tiled_menu = value;
+    pub fn set_menu_layout(&mut self, value: MenuLayout) {
+        self.menu_layout = value;
         self.flush_settings();
     }
 
@@ -148,7 +191,7 @@ impl GlobalSettings {
         let settings_path = self.dir.join("settings.ini");
         let mut ini = Ini::new();
         ini.with_section(Some("ra")).set("username", &self.ra_username).set("token", &self.ra_token);
-        ini.with_section(Some("menu")).set("tiled", if self.tiled_menu { "true" } else { "false" });
+        ini.with_section(Some("menu")).set("layout", self.menu_layout.to_ini());
         ini.write_to_file(settings_path).unwrap();
     }
 }

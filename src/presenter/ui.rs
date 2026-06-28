@@ -1,15 +1,15 @@
 use crate::cartridge_io::{CartridgeIo, CartridgePreview};
 use crate::core::graphics::gpu_renderer::GpuRenderer;
 use crate::game_info::get_game_info;
-use crate::global_settings::GlobalSettings;
+use crate::global_settings::{GlobalSettings, MenuLayout};
 use crate::key_bindings::KeyBinding;
 use crate::presenter::imgui::root::{
     ImDrawData, ImDrawList_AddImage, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF,
     ImFontAtlas_GetGlyphRangesDefault, ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCol__ImGuiCol_Text, ImGuiCond__ImGuiSetCond_Always,
     ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiNavInput__ImGuiNavInput_FocusNext,
     ImGuiNavInput__ImGuiNavInput_FocusPrev, ImGuiStyleVar__ImGuiStyleVar_Alpha, ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar, ImVec2, ImVec4,
+    ImGuiWindowFlags__ImGuiWindowFlags_HorizontalScrollbar, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar, ImVec2, ImVec4,
 };
 use crate::presenter::{cjk_font, default_key_binding, show_controls_create_settings, show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
@@ -580,9 +580,8 @@ unsafe fn render_global_settings_overlay(
     dialog_title(c"Global Settings");
 
     const BUTTON_WIDTH: f32 = 380.0;
-    let menu_layout_label = if global_settings.tiled_menu { c"Menu layout: Tiles" } else { c"Menu layout: List" };
-    if menu_button(menu_layout_label, BUTTON_WIDTH) {
-        global_settings.set_tiled_menu(!global_settings.tiled_menu);
+    if menu_button(global_settings.menu_layout.label(), BUTTON_WIDTH) {
+        global_settings.set_menu_layout(global_settings.menu_layout.next());
     }
     if menu_button(c"Custom screen layout", BUTTON_WIDTH) {
         *layout_settings = true;
@@ -1001,11 +1000,17 @@ pub fn show_main_menu(
 
             render_menu_bar(&cartridges, &cartridge_path);
 
-            if global_settings.tiled_menu {
-                render_tile_grid(&cartridges, &tile_textures, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
-            } else {
-                render_left_panel(&cartridges, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
-                render_right_panel(&cartridges, icon_tex, hovered);
+            match global_settings.menu_layout {
+                MenuLayout::List => {
+                    render_left_panel(&cartridges, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
+                    render_right_panel(&cartridges, icon_tex, hovered);
+                }
+                MenuLayout::Tiles => {
+                    render_tile_grid(&cartridges, &tile_textures, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
+                }
+                MenuLayout::Carousel => {
+                    render_carousel(&cartridges, &tile_textures, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
+                }
             }
 
             render_game_detail_overlay(
@@ -1367,6 +1372,135 @@ unsafe fn render_tile_grid(
         ImGui::SetWindowFontScale(0.9);
         let file_name = CString::new(cartridge.file_name.clone()).unwrap();
         ImGui::TextDisabled(file_name.as_ptr() as _);
+        ImGui::SetWindowFontScale(1f32);
+    }
+    ImGui::End();
+}
+
+/// 3DS-style menu: cartridge tiles in three evenly-spaced rows that scroll
+/// horizontally (column-major), driven by imgui gamepad/keyboard nav. The focused
+/// game's title shows above and its file name / code below. L/R page-skip the
+/// selection like the other layouts.
+unsafe fn render_carousel(
+    cartridges: &[CartridgePreview],
+    tile_textures: &[u32],
+    hovered: &mut Option<usize>,
+    show_global_settings: &mut bool,
+    detail_game: &mut Option<usize>,
+    active_tab: &mut usize,
+) {
+    const ROWS: usize = 3;
+    const TILE: f32 = 100f32;
+    const TILE_PADDING: i32 = 8;
+
+    let top = ImGui::GetFrameHeight();
+    if !begin_window(c"##carousel", 0f32, top, 960f32, 544f32 - top, PANEL_FLAGS) {
+        ImGui::End();
+        return;
+    }
+
+    let style = &*ImGui::GetStyle();
+    if full_width_button(c"Global settings") {
+        *show_global_settings = true;
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    let n = tile_textures.len();
+
+    // Selected game's title (first line), large and centered. Uses last frame's
+    // focus (one-frame lag) since the focused tile is only known after the grid.
+    let selected = hovered.filter(|&i| i < n).or(if n > 0 { Some(0) } else { None });
+    let title_text = selected.map_or(String::new(), |i| {
+        let full = cartridges[i].read_title().unwrap_or_else(|_| cartridges[i].file_name.clone());
+        full.lines().next().unwrap_or("").to_string()
+    });
+    let title = CString::new(title_text).unwrap();
+    ImGui::SetWindowFontScale(1.4);
+    centered_text(&title);
+    ImGui::SetWindowFontScale(1.0);
+    ImGui::Spacing();
+
+    let footer_height = ImGui::GetTextLineHeightWithSpacing() + style.ItemSpacing.y;
+
+    let tile_outer = TILE + (TILE_PADDING * 2) as f32;
+    let cell_w = tile_outer + style.ItemSpacing.x;
+    let cell_h = tile_outer + style.ItemSpacing.y;
+
+    let mut focused = None;
+    let grid_sz = ImVec2 { x: 0f32, y: -footer_height };
+    if ImGui::BeginChild(c"##carouselgrid".as_ptr() as _, &grid_sz, false, ImGuiWindowFlags__ImGuiWindowFlags_HorizontalScrollbar as _) {
+        let child_w = ImGui::GetContentRegionAvail().x;
+        let base_x = ImGui::GetCursorPosX();
+        // Center the three rows vertically in the child.
+        let base_y = ImGui::GetCursorPosY() + ((ImGui::GetContentRegionAvail().y - ROWS as f32 * cell_h) * 0.5).max(0f32);
+
+        // L / R shoulder buttons page-skip the selection by a screen of columns.
+        let visible_cols = (child_w / cell_w) as usize;
+        let page = (ROWS * visible_cols.max(1)).max(1);
+        let dir = if detail_game.is_some() || *show_global_settings || n == 0 {
+            0
+        } else if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusPrev) {
+            -1
+        } else if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusNext) {
+            1
+        } else {
+            0
+        };
+        let target = if dir != 0 {
+            let nav_id = (*ImGui::GetCurrentContext()).NavId;
+            let cur = tile_textures.iter().enumerate().position(|(i, texture)| tile_button_id(i, *texture) == nav_id).map_or(0, |c| c as isize);
+            Some((cur + dir * page as isize).clamp(0, n as isize - 1) as usize)
+        } else {
+            None
+        };
+
+        let tile_sz = ImVec2 { x: TILE, y: TILE };
+        let uv0 = ImVec2 { x: 0f32, y: 0f32 };
+        let uv1 = ImVec2 { x: 1f32, y: 1f32 };
+        let bg = ImVec4 { x: 0f32, y: 0f32, z: 0f32, w: 0f32 };
+        let tint = ImVec4 { x: 1f32, y: 1f32, z: 1f32, w: 1f32 };
+        for (i, texture) in tile_textures.iter().enumerate() {
+            let col = i / ROWS;
+            let row = i % ROWS;
+            let pos = ImVec2 { x: base_x + col as f32 * cell_w, y: base_y + row as f32 * cell_h };
+            ImGui::SetCursorPos(&pos);
+            ImGui::PushID3(i as _);
+            if ImGui::ImageButton(*texture as _, &tile_sz, &uv0, &uv1, TILE_PADDING, &bg, &tint) {
+                *detail_game = Some(i);
+                *active_tab = 0;
+            }
+            if ImGui::IsItemHovered(ImGuiHoveredFlags__ImGuiHoveredFlags_Default as _) || ImGui::IsItemFocused() {
+                focused = Some(i);
+            }
+            if target == Some(i) {
+                ImGui::PushID2(*texture as *const std::ffi::c_void);
+                let id = ImGui::GetID(c"#image".as_ptr() as _);
+                ImGui::PopID();
+                ImGui::SetFocusID(id, (*ImGui::GetCurrentContext()).CurrentWindow);
+                // Bring the target column into view, centered (nav alone doesn't scroll).
+                ImGui::SetScrollX((col as f32 * cell_w - (child_w - cell_w) * 0.5).max(0f32));
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    if focused.is_some() {
+        *hovered = focused;
+    }
+
+    // Footer: file name (smaller) and game code at the right edge.
+    ImGui::Separator();
+    if let Some(i) = focused.or(selected) {
+        let cartridge = &cartridges[i];
+        ImGui::SetWindowFontScale(0.9);
+        let file_name = CString::new(cartridge.file_name.clone()).unwrap();
+        ImGui::TextDisabled(file_name.as_ptr() as _);
+        let game_code = CString::new(format!("{:#010X}", cartridge.get_game_code())).unwrap();
+        let code_size = ImGui::CalcTextSize(game_code.as_ptr() as _, ptr::null(), false, 0f32);
+        ImGui::SameLine(0f32, 0f32);
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - code_size.x);
+        ImGui::TextDisabled(game_code.as_ptr() as _);
         ImGui::SetWindowFontScale(1f32);
     }
     ImGui::End();
