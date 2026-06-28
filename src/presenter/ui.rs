@@ -5,10 +5,10 @@ use crate::key_bindings::KeyBinding;
 use crate::presenter::imgui::root::{
     ImDrawData, ImDrawList_AddImage, ImDrawList_AddQuad, ImDrawList_AddQuadFilled, ImDrawList_AddRect, ImDrawList_AddRectFilled, ImDrawList_AddText, ImFontAtlas_AddFontFromMemoryTTF,
     ImFontAtlas_GetGlyphRangesDefault, ImFontConfig, ImFontConfig_ImFontConfig, ImGui, ImGuiCol__ImGuiCol_Button, ImGuiCol__ImGuiCol_Text, ImGuiCond__ImGuiSetCond_Always,
-    ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiNavInput__ImGuiNavInput_FocusNext, ImGuiNavInput__ImGuiNavInput_FocusPrev, ImGuiStyleVar__ImGuiStyleVar_Alpha,
-    ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus, ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse,
-    ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar,
-    ImVec2, ImVec4,
+    ImGuiHoveredFlags__ImGuiHoveredFlags_Default, ImGuiItemFlags__ImGuiItemFlags_Disabled, ImGuiNavInput__ImGuiNavInput_Cancel, ImGuiNavInput__ImGuiNavInput_FocusNext,
+    ImGuiNavInput__ImGuiNavInput_FocusPrev, ImGuiStyleVar__ImGuiStyleVar_Alpha, ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse, ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags__ImGuiWindowFlags_NoMove, ImGuiWindowFlags__ImGuiWindowFlags_NoResize,
+    ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar, ImVec2, ImVec4,
 };
 use crate::presenter::{cjk_font, default_key_binding, show_controls_create_settings, show_layout_create_settings, show_retroachievements_settings, PRESENTER_SCREEN_HEIGHT, PRESENTER_SCREEN_WIDTH};
 use crate::ra_context::RaContext;
@@ -143,7 +143,10 @@ unsafe fn render_settings_tabs(settings_config: &mut SettingsConfig, active_tab:
 /// A zero-height, full-width invisible button that gamepad nav can focus, used to
 /// let nav scroll past the first/last real control to the list's edge.
 unsafe fn nav_scroll_stop(id: &std::ffi::CStr) {
-    let sz = ImVec2 { x: ImGui::GetContentRegionAvail().x.max(1f32), y: 1f32 };
+    let sz = ImVec2 {
+        x: ImGui::GetContentRegionAvail().x.max(1f32),
+        y: 1f32,
+    };
     ImGui::InvisibleButton(id.as_ptr() as _, &sz);
 }
 
@@ -1216,13 +1219,15 @@ unsafe fn render_game_detail_overlay(
     ImGui::SameLine(0.0, 12.0);
     ImGui::BeginGroup();
     ImGui::SetWindowFontScale(1.3);
-    match cartridge.read_title() {
-        Ok(title) => {
-            let title = CString::new(title).unwrap();
-            ImGui::Text(title.as_ptr() as _);
-        }
-        Err(_) => ImGui::Text(c"Couldn't read game title".as_ptr() as _),
-    }
+    let title = CString::new(cartridge.read_title().unwrap_or("Couldn't read game title".to_string())).unwrap();
+    ImGui::Text(title.as_ptr() as _);
+
+    ImGui::SetWindowFontScale(0.9);
+    let game_code = CString::new(format!("{:#010X}", cartridge.get_game_code())).unwrap();
+    let code_size = ImGui::CalcTextSize(game_code.as_ptr() as _, ptr::null(), false, 0f32);
+    ImGui::SameLine(0f32, 0f32);
+    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - code_size.x);
+    ImGui::TextDisabled(game_code.as_ptr() as _);
     ImGui::SetWindowFontScale(1.0);
     ImGui::Spacing();
     if full_width_button(c"Launch game") {

@@ -73,6 +73,12 @@ pub struct CartridgeHeader {
     reserved5: [u8; 0x90],
 }
 
+impl CartridgeHeader {
+    fn game_code(&self) -> u32 {
+        u32::from_le_bytes(self.game_code)
+    }
+}
+
 const HEADER_SIZE: usize = size_of::<CartridgeHeader>();
 pub const HEADER_IN_RAM_SIZE: usize = 0x170;
 const_assert_eq!(HEADER_SIZE, HEADER_IN_RAM_SIZE + 0x90);
@@ -193,6 +199,10 @@ impl CartridgePreview {
             Err(_) => Err(io::Error::from(ErrorKind::InvalidData)),
         }
     }
+
+    pub fn get_game_code(&self) -> u32 {
+        self.header.game_code()
+    }
 }
 
 pub struct CartridgeIo {
@@ -229,8 +239,7 @@ impl CartridgeIo {
             }
         });
 
-        let game_code = u32::from_le_bytes(preview.header.game_code);
-        if let Some(metadata) = get_cartridge_metadata(game_code) {
+        if let Some(metadata) = get_cartridge_metadata(preview.header.game_code()) {
             save_buf.resize(metadata.save_size as usize, 0xFF);
             save_file_size = metadata.save_size;
         }
