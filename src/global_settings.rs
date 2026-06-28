@@ -11,6 +11,7 @@ pub struct GlobalSettings {
     pub custom_controls: Vec<KeyBinding>,
     pub ra_username: String,
     pub ra_token: String,
+    pub tiled_menu: bool,
 }
 
 impl GlobalSettings {
@@ -45,6 +46,7 @@ impl GlobalSettings {
 
         let mut ra_username = "".to_string();
         let mut ra_token = "".to_string();
+        let mut tiled_menu = false;
         let settings_path = dir.join("settings.ini");
         if let Ok(ini) = Ini::load_from_file(settings_path) {
             if let Some(props) = ini.section(Some("ra")) {
@@ -55,6 +57,9 @@ impl GlobalSettings {
                     ra_token = token.to_string();
                 }
             }
+            if let Some(props) = ini.section(Some("menu")) {
+                tiled_menu = props.get("tiled") == Some("true");
+            }
         }
 
         Ok(GlobalSettings {
@@ -64,6 +69,7 @@ impl GlobalSettings {
             custom_controls,
             ra_username,
             ra_token,
+            tiled_menu,
         })
     }
 
@@ -133,12 +139,16 @@ impl GlobalSettings {
         self.flush_settings();
     }
 
+    pub fn set_tiled_menu(&mut self, value: bool) {
+        self.tiled_menu = value;
+        self.flush_settings();
+    }
+
     fn flush_settings(&self) {
         let settings_path = self.dir.join("settings.ini");
         let mut ini = Ini::new();
-        let mut props = ini.with_section(Some("ra"));
-        props.set("username", &self.ra_username);
-        props.set("token", &self.ra_token);
+        ini.with_section(Some("ra")).set("username", &self.ra_username).set("token", &self.ra_token);
+        ini.with_section(Some("menu")).set("tiled", if self.tiled_menu { "true" } else { "false" });
         ini.write_to_file(settings_path).unwrap();
     }
 }

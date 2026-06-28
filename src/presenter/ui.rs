@@ -31,9 +31,13 @@ pub trait UiBackend {
 const OVERLAY_FLAGS: u32 =
     (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags__ImGuiWindowFlags_NoResize | ImGuiWindowFlags__ImGuiWindowFlags_NoMove | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse) as u32;
 
-const PANEL_FLAGS: u32 = OVERLAY_FLAGS;
+// NoFocusOnAppearing/NoBringToFrontOnFocus: switching the menu layout makes the
+// new browse window (##left or ##tiles) first appear while the global-settings
+// overlay is open; without these it steals focus from the overlay and draws in
+// front of it, leaving the overlay stuck (Back can't close an unfocused overlay).
+const PANEL_FLAGS: u32 = OVERLAY_FLAGS | ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus as u32 | ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing as u32;
 
-const RIGHT_PANEL_FLAGS: u32 = (PANEL_FLAGS | ImGuiWindowFlags__ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags__ImGuiWindowFlags_NoFocusOnAppearing) as u32;
+const RIGHT_PANEL_FLAGS: u32 = PANEL_FLAGS;
 
 #[inline]
 unsafe fn begin_window(id: &std::ffi::CStr, x: f32, y: f32, w: f32, h: f32, flags: u32) -> bool {
@@ -557,6 +561,7 @@ unsafe fn render_tab_settings(settings_config: &mut SettingsConfig, group: Setti
 }
 unsafe fn render_global_settings_overlay(
     show: &mut bool,
+    global_settings: &mut GlobalSettings,
     layout_settings: &mut bool,
     controls_settings: &mut bool,
     ra_settings: &mut bool,
@@ -575,6 +580,10 @@ unsafe fn render_global_settings_overlay(
     dialog_title(c"Global Settings");
 
     const BUTTON_WIDTH: f32 = 380.0;
+    let menu_layout_label = if global_settings.tiled_menu { c"Menu layout: Tiles" } else { c"Menu layout: List" };
+    if menu_button(menu_layout_label, BUTTON_WIDTH) {
+        global_settings.set_tiled_menu(!global_settings.tiled_menu);
+    }
     if menu_button(c"Custom screen layout", BUTTON_WIDTH) {
         *layout_settings = true;
     }
@@ -967,6 +976,20 @@ pub fn show_main_menu(
         gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as _);
         gl::TexImage2D(gl::TEXTURE_2D, 0, gl::RGBA as _, 32, 32, 0, gl::RGBA, gl::UNSIGNED_BYTE, ptr::null());
 
+        // One texture per cartridge for the tiled menu, each loaded once up front
+        // (the list menu only needs the single `icon_tex` for the hovered game).
+        let mut tile_textures = vec![0u32; cartridges.len()];
+        if !cartridges.is_empty() {
+            gl::GenTextures(tile_textures.len() as _, tile_textures.as_mut_ptr());
+            for (texture, cartridge) in tile_textures.iter().zip(cartridges.iter()) {
+                gl::BindTexture(gl::TEXTURE_2D, *texture);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as _);
+                gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as _);
+                gl::TexImage2D(gl::TEXTURE_2D, 0, gl::RGBA as _, 32, 32, 0, gl::RGBA, gl::UNSIGNED_BYTE, ptr::null());
+                load_icon_texture(*texture, cartridge);
+            }
+        }
+
         while !launched {
             if !ui_backend.new_frame() {
                 return None;
@@ -978,9 +1001,12 @@ pub fn show_main_menu(
 
             render_menu_bar(&cartridges, &cartridge_path);
 
-            render_left_panel(&cartridges, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
-
-            render_right_panel(&cartridges, icon_tex, hovered);
+            if global_settings.tiled_menu {
+                render_tile_grid(&cartridges, &tile_textures, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
+            } else {
+                render_left_panel(&cartridges, &mut hovered, &mut show_global_settings, &mut detail_game, &mut active_tab);
+                render_right_panel(&cartridges, icon_tex, hovered);
+            }
 
             render_game_detail_overlay(
                 &cartridges,
@@ -996,6 +1022,7 @@ pub fn show_main_menu(
 
             render_global_settings_overlay(
                 &mut show_global_settings,
+                &mut global_settings,
                 &mut layout_settings,
                 &mut controls_settings,
                 &mut ra_settings,
@@ -1051,6 +1078,9 @@ pub fn show_main_menu(
         }
 
         gl::DeleteTextures(1, &icon_tex);
+        if !tile_textures.is_empty() {
+            gl::DeleteTextures(tile_textures.len() as _, tile_textures.as_ptr());
+        }
 
         let sel = detail_game.unwrap();
         let preview = cartridges.into_iter().nth(sel).unwrap();
@@ -1193,6 +1223,151 @@ unsafe fn render_right_panel(cartridges: &[CartridgePreview], icon_tex: u32, hov
         render_game_preview(&cartridges[i], icon_tex);
     } else {
         ImGui::Text(c"Select a game from the list".as_ptr() as _);
+    }
+    ImGui::End();
+}
+
+/// DSi-style tiled menu: a scrolling grid of rounded cartridge-icon tiles. The
+/// focused/hovered tile's title, file name and game code show in a bottom bar.
+/// Selecting a tile opens the same game detail overlay as the list menu.
+/// The imgui id ImageButton assigns to tile `index` — it pushes the texture id
+/// then uses `GetID("#image")`, and we wrap each tile in `PushID3(index)`. Needed
+/// to match the focused tile against the current NavId for L/R page-skip.
+unsafe fn tile_button_id(index: usize, texture: u32) -> u32 {
+    ImGui::PushID3(index as _);
+    ImGui::PushID2(texture as *const std::ffi::c_void);
+    let id = ImGui::GetID(c"#image".as_ptr() as _);
+    ImGui::PopID();
+    ImGui::PopID();
+    id
+}
+
+unsafe fn render_tile_grid(
+    cartridges: &[CartridgePreview],
+    tile_textures: &[u32],
+    hovered: &mut Option<usize>,
+    show_global_settings: &mut bool,
+    detail_game: &mut Option<usize>,
+    active_tab: &mut usize,
+) {
+    let top = ImGui::GetFrameHeight();
+    if !begin_window(c"##tiles", 0f32, top, 960f32, 544f32 - top, PANEL_FLAGS) {
+        ImGui::End();
+        return;
+    }
+
+    let style = &*ImGui::GetStyle();
+
+    if full_width_button(c"Global settings") {
+        *show_global_settings = true;
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // Reserve a two-line footer (title, then file name) below the grid, plus the
+    // separator, with no extra bottom gap.
+    let footer_height = ImGui::GetTextLineHeightWithSpacing() * 2f32 + style.ItemSpacing.y;
+
+    const TILE: f32 = 96f32;
+    const TILE_PADDING: i32 = 8;
+    let tile_outer = TILE + (TILE_PADDING * 2) as f32;
+
+    let mut focused = None;
+    let grid_sz = ImVec2 { x: 0f32, y: -footer_height };
+    if ImGui::BeginChild(c"##tilegrid".as_ptr() as _, &grid_sz, false, 0) {
+        let n = tile_textures.len();
+        let avail = ImGui::GetContentRegionAvail().x;
+        let columns = (((avail + style.ItemSpacing.x) / (tile_outer + style.ItemSpacing.x)) as usize).max(1);
+
+        // L / R shoulder buttons page-skip the selection by a full page of visible
+        // rows. Find the focused tile by matching the current NavId, shift it, then
+        // re-focus + center the target (same idea as the list menu). Suppressed
+        // while an L/R-using overlay is on top.
+        let row_height = tile_outer + style.ItemSpacing.y;
+        let rows_visible = (ImGui::GetWindowHeight() / row_height) as usize;
+        let page = (columns * rows_visible.max(1)).max(1);
+        let dir = if detail_game.is_some() || *show_global_settings || n == 0 {
+            0
+        } else if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusPrev) {
+            -1
+        } else if nav_input_pressed(ImGuiNavInput__ImGuiNavInput_FocusNext) {
+            1
+        } else {
+            0
+        };
+        let target = if dir != 0 {
+            let nav_id = (*ImGui::GetCurrentContext()).NavId;
+            let cur = tile_textures.iter().enumerate().position(|(i, texture)| tile_button_id(i, *texture) == nav_id).map_or(0, |c| c as isize);
+            Some((cur + dir * page as isize).clamp(0, n as isize - 1) as usize)
+        } else {
+            None
+        };
+
+        // Center the grid block so the leftover width is split evenly instead of
+        // pooling on the right edge.
+        let used = columns.min(n.max(1)) as f32;
+        let grid_width = used * tile_outer + (used - 1f32) * style.ItemSpacing.x;
+        let row_start_x = ImGui::GetCursorPosX() + (avail - grid_width).max(0f32) * 0.5;
+
+        let tile_sz = ImVec2 { x: TILE, y: TILE };
+        let uv0 = ImVec2 { x: 0f32, y: 0f32 };
+        let uv1 = ImVec2 { x: 1f32, y: 1f32 };
+        let bg = ImVec4 { x: 0f32, y: 0f32, z: 0f32, w: 0f32 };
+        let tint = ImVec4 { x: 1f32, y: 1f32, z: 1f32, w: 1f32 };
+        for (i, texture) in tile_textures.iter().enumerate() {
+            if i % columns == 0 {
+                ImGui::SetCursorPosX(row_start_x);
+            } else {
+                ImGui::SameLine(0f32, style.ItemSpacing.x);
+            }
+            let row_y = ImGui::GetCursorPosY();
+            ImGui::PushID3(i as _);
+            if ImGui::ImageButton(*texture as _, &tile_sz, &uv0, &uv1, TILE_PADDING, &bg, &tint) {
+                *detail_game = Some(i);
+                *active_tab = 0;
+            }
+            if ImGui::IsItemHovered(ImGuiHoveredFlags__ImGuiHoveredFlags_Default as _) || ImGui::IsItemFocused() {
+                focused = Some(i);
+            }
+            if target == Some(i) {
+                // Move the gamepad selection to this tile (its texture id is on the
+                // id stack, matching ImageButton's own id) and center its row.
+                ImGui::PushID2(*texture as *const std::ffi::c_void);
+                let id = ImGui::GetID(c"#image".as_ptr() as _);
+                ImGui::PopID();
+                ImGui::SetFocusID(id, (*ImGui::GetCurrentContext()).CurrentWindow);
+                ImGui::SetScrollFromPosY(row_y - ImGui::GetScrollY(), 0.5);
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    if focused.is_some() {
+        *hovered = focused;
+    }
+
+    ImGui::Separator();
+    if let Some(i) = focused {
+        let cartridge = &cartridges[i];
+
+        // Only the first line of the title; DS titles are often multi-line.
+        let full_title = cartridge.read_title().unwrap_or_else(|_| cartridge.file_name.clone());
+        let title = CString::new(full_title.lines().next().unwrap_or("")).unwrap();
+        ImGui::Text(title.as_ptr() as _);
+
+        // Game code at the right edge of the title line.
+        ImGui::SetWindowFontScale(0.9);
+        let game_code = CString::new(format!("{:#010X}", cartridge.get_game_code())).unwrap();
+        let code_size = ImGui::CalcTextSize(game_code.as_ptr() as _, ptr::null(), false, 0f32);
+        ImGui::SameLine(0f32, 0f32);
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - code_size.x);
+        ImGui::TextDisabled(game_code.as_ptr() as _);
+
+        // File name underneath, smaller and disabled.
+        ImGui::SetWindowFontScale(0.9);
+        let file_name = CString::new(cartridge.file_name.clone()).unwrap();
+        ImGui::TextDisabled(file_name.as_ptr() as _);
+        ImGui::SetWindowFontScale(1f32);
     }
     ImGui::End();
 }

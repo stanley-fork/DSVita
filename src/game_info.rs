@@ -57,10 +57,10 @@ lazy_static! {
         (0x474B59, &SOUNDHLE_WIDESCREEN), // Kingdom Hearts 358/2 Days
         (0x484D41, &HLE_WIDESCREEN), // Metroid Prime Hunters
         (0x494B42, &HLE_WIDESCREEN), // The Legend of Zelda ST
+        (0x4B3242, &NI_NO_KUNI), // Ni no Kuni
         (0x4B5049, &POKEMON_GEN4), // Pokemon HG
         (0x4D4441, &SOUNDHLE_WIDESCREEN), // Animal Crossing Wild World
         (0x514459, &HLE_WIDESCREEN), // Dragon Quest IX
-        (0x524E54, &NI_NO_KUNI), // Ni no Kuni
         (0x555043, &POKEMON_GEN4), // Pokemon Platinum
         (0x594543, &HLE_NO_3D_SKIP), // Aliens Infestation
     ];
