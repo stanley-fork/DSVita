@@ -91,6 +91,7 @@ Currently we are also stuck with an older rust compiler, which still uses llvm-2
 - Install (replace your existing udcd-uvc install) https://github.com/Grarak/vita-udcd-uvc/releases/tag/1.0 under the `*KERNEL` section of your config.txt
 - Install https://github.com/GrapheneCt/CapUnlocker
 - Enable the stream top screen setting
+- If you only get a black screen, reboot your vita (you might need multiple reboots)
 
 ## Credits
 
