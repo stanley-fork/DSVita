@@ -1,5 +1,6 @@
 use crate::cartridge_io::{CartridgeIo, CartridgePreview};
 use crate::core::graphics::gpu_renderer::GpuRenderer;
+use crate::game_info::get_game_info;
 use crate::global_settings::GlobalSettings;
 use crate::key_bindings::KeyBinding;
 use crate::presenter::imgui::root::{
@@ -475,6 +476,7 @@ unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirt
     let control_w = match setting.value {
         SettingValue::Bool(_) => buttons_width,
         SettingValue::List(_) => COMBO_WIDTH,
+        SettingValue::Int(_) => COMBO_WIDTH,
     };
     let region_x = ImGui::GetCursorPosX();
     let avail = ImGui::GetContentRegionAvail().x;
@@ -532,6 +534,7 @@ unsafe fn render_setting(setting: &mut crate::settings::Setting, id: usize, dirt
             }
             ImGui::PopItemWidth();
         }
+        SettingValue::Int(_) => {}
     }
     ImGui::PopID();
 
@@ -1194,6 +1197,90 @@ unsafe fn render_right_panel(cartridges: &[CartridgePreview], icon_tex: u32, hov
     ImGui::End();
 }
 
+/// Wrapped bullet line for the recommendations dialog. BulletText itself ignores
+/// the wrap pos (it renders one long line, blowing up the auto-resized window), so
+/// draw the bullet, then wrapped TextUnformatted (also avoids printf parsing the
+/// text, so a `%` in a value is safe).
+unsafe fn dialog_bullet(text: &std::ffi::CStr, wrap: f32) {
+    ImGui::Bullet();
+    ImGui::SameLine(0f32, (*ImGui::GetStyle()).ItemInnerSpacing.x);
+    ImGui::PushTextWrapPos(wrap);
+    ImGui::TextUnformatted(text.as_ptr() as _, ptr::null());
+    ImGui::PopTextWrapPos();
+}
+
+/// Modal with a game's recommended settings, or — when none are known — a default
+/// notice with general hints. Opened via `OpenPopup(c"game_info_dialog")`.
+unsafe fn render_game_info_dialog(info: Option<&crate::game_info::SettingRecommendation>) {
+    center_next_window();
+    if ImGui::BeginPopupModal(
+        c"game_info_dialog".as_ptr(),
+        ptr::null_mut(),
+        (ImGuiWindowFlags__ImGuiWindowFlags_NoTitleBar
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoResize
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoMove
+            | ImGuiWindowFlags__ImGuiWindowFlags_NoCollapse
+            | ImGuiWindowFlags__ImGuiWindowFlags_AlwaysAutoResize) as _,
+    ) {
+        // Bound the popup width by wrapping the text; the setting lines are short.
+        let wrap = ImGui::GetCursorPosX() + 420f32;
+
+        match info {
+            Some(info) => {
+                dialog_title(c"Recommended settings");
+
+                // Plain-language warning: these recommendations may be wrong.
+                let notice = c"These recommendations can be wrong: if the game runs badly or crashes, change the settings and try again.";
+                ImGui::PushTextWrapPos(wrap);
+                ImGui::Text(notice.as_ptr() as _);
+                ImGui::PopTextWrapPos();
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                for (id, value) in &info.settings {
+                    let definition = id.definition();
+                    let group: &str = definition.group.into();
+                    let value_text = match value {
+                        SettingValue::Bool(value) => (if *value { "on" } else { "off" }).to_string(),
+                        SettingValue::Int(index) => definition.value.as_list().and_then(|(_, values)| values.get(*index)).cloned().unwrap_or_else(|| index.to_string()),
+                        SettingValue::List(inner) => inner.values.get(inner.selection).cloned().unwrap_or_default(),
+                    };
+                    let line = CString::new(format!("{} - {}: {}", group, definition.title, value_text)).unwrap();
+                    dialog_bullet(&line, wrap);
+                }
+
+                if !info.info.is_empty() {
+                    ImGui::Spacing();
+                    let info_text = CString::new(info.info).unwrap();
+                    ImGui::PushTextWrapPos(wrap);
+                    ImGui::TextDisabled(info_text.as_ptr() as _);
+                    ImGui::PopTextWrapPos();
+                }
+            }
+            None => {
+                dialog_title(c"No recommendations");
+
+                let intro = c"There are no recommendations for this game yet. Please try it on your own. These general hints may help:";
+                ImGui::PushTextWrapPos(wrap);
+                ImGui::Text(intro.as_ptr() as _);
+                ImGui::PopTextWrapPos();
+                ImGui::Spacing();
+
+                dialog_bullet(c"Start with Arm7 Emulation set to Hle - it usually works and runs the fastest. If the game crashes or freezes at some point, switch to SoundHle instead, which is still faster than AccurateLle.", wrap);
+                dialog_bullet(c"Same idea for the HLE OS irq handler: turn it off if the game crashes or freezes.", wrap);
+                dialog_bullet(c"If the game has heavy graphical glitches or uses 3D on both screen, turn Geometry 3D frameskip off.", wrap);
+            }
+        }
+        ImGui::Spacing();
+
+        if menu_button(c"Close", 200f32) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 unsafe fn render_game_detail_overlay(
     cartridges: &[CartridgePreview],
     settings_configs: &mut [SettingsConfig],
@@ -1214,6 +1301,7 @@ unsafe fn render_game_detail_overlay(
         return;
     }
     let cartridge = &cartridges[i];
+    let game_info = get_game_info(cartridge.get_game_code());
 
     icon_image(icon_tex);
     ImGui::SameLine(0.0, 12.0);
@@ -1230,13 +1318,29 @@ unsafe fn render_game_detail_overlay(
     ImGui::TextDisabled(game_code.as_ptr() as _);
     ImGui::SetWindowFontScale(1.0);
     ImGui::Spacing();
-    if full_width_button(c"Launch game") {
+    // Launch fills the row except for the recommendations button beside it, which
+    // is sized to its own label and always shown (it falls back to general hints).
+    let spacing = (*ImGui::GetStyle()).ItemSpacing.x;
+    let info_label = c"Recommended";
+    let info_w = ImGui::CalcTextSize(info_label.as_ptr(), ptr::null(), false, 0f32).x + (*ImGui::GetStyle()).FramePadding.x * 2f32;
+    let launch_sz = ImVec2 {
+        x: ImGui::GetContentRegionAvail().x - info_w - spacing,
+        y: 0f32,
+    };
+    if ImGui::Button(c"Launch game".as_ptr(), &launch_sz) {
         *launched = true;
+    }
+    ImGui::SameLine(0f32, spacing);
+    let info_sz = ImVec2 { x: info_w, y: 0f32 };
+    if ImGui::Button(info_label.as_ptr(), &info_sz) {
+        ImGui::OpenPopup(c"game_info_dialog".as_ptr());
     }
     ImGui::PushTextWrapPos(0f32);
     ImGui::TextDisabled(c"First launch will take a while. Don't exit or power off your Vita.".as_ptr());
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
+
+    render_game_info_dialog(game_info);
 
     ImGui::Spacing();
     settings_configs[i].settings.populate_screen_layouts(screen_layouts);

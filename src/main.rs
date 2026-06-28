@@ -54,6 +54,7 @@ mod cartridge_metadata;
 mod core;
 mod fast_fixed_fifo;
 mod fixed_fifo;
+mod game_info;
 mod global_settings;
 mod jit;
 mod key_bindings;

@@ -88,6 +88,7 @@ impl ListInner {
 pub enum SettingValue {
     Bool(bool),
     List(ListInner),
+    Int(usize),
 }
 
 impl<D: Default + Into<u8> + Sized + Into<&'static str>, T: Iterator<Item = D>> From<T> for SettingValue {
@@ -104,6 +105,7 @@ impl SettingValue {
         match self {
             SettingValue::Bool(value) => *value ^= true,
             SettingValue::List(inner) => inner.selection = (inner.selection + 1) % inner.values.len(),
+            SettingValue::Int(_) => {}
         }
     }
 
@@ -142,6 +144,7 @@ impl SettingValue {
                 inner.initial_selection = str.to_string();
                 inner.reset_to_initial_selection();
             }
+            SettingValue::Int(_) => {}
         }
     }
 
@@ -149,6 +152,7 @@ impl SettingValue {
         match self {
             SettingValue::Bool(value) => value.to_string(),
             SettingValue::List(inner) => inner.values[inner.selection].to_string(),
+            SettingValue::Int(value) => value.to_string(),
         }
     }
 }
@@ -159,14 +163,9 @@ impl Display for SettingValue {
             f,
             "{}",
             match self {
-                SettingValue::Bool(value) => {
-                    if *value {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                }
-                SettingValue::List(inner) => &inner.values[inner.selection],
+                SettingValue::Bool(value) => if *value { "on" } else { "off" }.to_string(),
+                SettingValue::List(inner) => inner.values[inner.selection].clone(),
+                SettingValue::Int(value) => value.to_string(),
             }
         )
     }
@@ -236,7 +235,7 @@ pub(crate) enum SettingId {
 }
 
 impl SettingId {
-    fn definition(self) -> Setting {
+    pub(crate) fn definition(self) -> Setting {
         match self {
             SettingId::Arm7Emu => Setting::new(
                 "Arm7 Emulation",
