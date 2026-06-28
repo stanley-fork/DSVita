@@ -297,7 +297,7 @@ impl RaContext {
     }
 
     pub fn start_server_request_receive_thread(&mut self) -> JoinHandle<()> {
-        self.active.store(true, Ordering::Relaxed);
+        self.active.store(true, Ordering::Release);
 
         let ptr = self as *mut _ as usize;
         thread::Builder::new()
@@ -310,107 +310,109 @@ impl RaContext {
                 let ra_context = unsafe { (ptr as *mut RaContext).as_mut_unchecked() };
                 let http_client = Client::new();
 
-                while ra_context.active.load(Ordering::Relaxed) {
-                    if let Ok(rc_request) = ra_context.requests_receiver.recv_timeout(Duration::from_millis(500)) {
-                        match rc_request {
-                            Request::Server(rc_request) => {
-                                let request = match rc_request.data {
-                                    None => http_client.get(rc_request.url),
-                                    Some(data) => http_client.post(rc_request.url).body(data),
-                                }
-                                .header("User-Agent", USER_AGENT)
-                                .header("Content-Type", rc_request.content_type)
-                                .timeout(Duration::from_secs(120))
-                                .build()
-                                .unwrap();
+                while ra_context.active.load(Ordering::Acquire) {
+                    let Ok(rc_request) = ra_context.requests_receiver.recv_timeout(Duration::from_millis(500)) else {
+                        continue;
+                    };
 
-                                let response = http_client.execute(request);
-                                match response {
+                    match rc_request {
+                        Request::Server(rc_request) => {
+                            let request = match rc_request.data {
+                                None => http_client.get(rc_request.url),
+                                Some(data) => http_client.post(rc_request.url).body(data),
+                            }
+                            .header("User-Agent", USER_AGENT)
+                            .header("Content-Type", rc_request.content_type)
+                            .timeout(Duration::from_secs(120))
+                            .build()
+                            .unwrap();
+
+                            let response = http_client.execute(request);
+                            match response {
+                                Ok(response) => {
+                                    if let Some(callback) = rc_request.callback {
+                                        let status = response.status().as_u16();
+                                        match response.bytes() {
+                                            Ok(bytes) => {
+                                                let mut rc_response: rc_api_server_response_t = unsafe { mem::zeroed() };
+                                                rc_response.body = bytes.as_ptr() as _;
+                                                rc_response.body_length = bytes.len();
+                                                rc_response.http_status_code = status as _;
+                                                unsafe { callback(&rc_response, rc_request.callback_data) };
+                                            }
+                                            Err(err) => {
+                                                let mut rc_response: rc_api_server_response_t = unsafe { mem::zeroed() };
+                                                let msg = err.to_string() + "\nPlease check your internet connection";
+                                                rc_response.body = msg.as_ptr() as _;
+                                                rc_response.body_length = msg.len();
+                                                rc_response.http_status_code = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR as _;
+                                                unsafe { callback(&rc_response, rc_request.callback_data) };
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    if let Some(callback) = rc_request.callback {
+                                        let mut rc_response: rc_api_server_response_t = unsafe { mem::zeroed() };
+                                        let msg = err.to_string() + "\nPlease check your internet connection";
+                                        rc_response.body = msg.as_ptr() as _;
+                                        rc_response.body_length = msg.len();
+                                        rc_response.http_status_code = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR as _;
+                                        unsafe { callback(&rc_response, rc_request.callback_data) };
+                                    }
+                                }
+                            }
+                        }
+                        Request::Event(rc_request) => {
+                            debug_assert!(!rc_request.badge_name.is_empty() && !rc_request.badge_url.is_empty());
+                            let game_info = unsafe { rc_client_get_game_info(ra_context.rc_client).as_ref().unwrap() };
+                            let hash = unsafe { CStr::from_ptr(game_info.hash).to_str().unwrap() };
+
+                            let cache_path = ra_context.cache_dir.join(hash).join(&rc_request.badge_name);
+                            let mut decode_options = DecodeOptions::default();
+                            decode_options.set_ignore_checksums(true);
+                            let badge = if cache_path.exists() {
+                                let decoder = png::Decoder::new_with_options(BufReader::new(File::open(cache_path).unwrap()), decode_options);
+                                let mut reader = decoder.read_info().unwrap();
+                                let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+                                let info = reader.next_frame(&mut buf).unwrap();
+                                buf.truncate(info.buffer_size());
+                                buf.shrink_to_fit();
+                                Some((buf, info))
+                            } else {
+                                let request = http_client.get(rc_request.badge_url).timeout(Duration::from_secs(20)).build().unwrap();
+                                match http_client.execute(request) {
                                     Ok(response) => {
-                                        if let Some(callback) = rc_request.callback {
-                                            let status = response.status().as_u16();
-                                            match response.bytes() {
-                                                Ok(bytes) => {
-                                                    let mut rc_response: rc_api_server_response_t = unsafe { mem::zeroed() };
-                                                    rc_response.body = bytes.as_ptr() as _;
-                                                    rc_response.body_length = bytes.len();
-                                                    rc_response.http_status_code = status as _;
-                                                    unsafe { callback(&rc_response, rc_request.callback_data) };
-                                                }
-                                                Err(err) => {
-                                                    let mut rc_response: rc_api_server_response_t = unsafe { mem::zeroed() };
-                                                    let msg = err.to_string() + "\nPlease check your internet connection";
-                                                    rc_response.body = msg.as_ptr() as _;
-                                                    rc_response.body_length = msg.len();
-                                                    rc_response.http_status_code = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR as _;
-                                                    unsafe { callback(&rc_response, rc_request.callback_data) };
-                                                }
+                                        fs::create_dir_all(ra_context.cache_dir.join(hash)).unwrap();
+
+                                        match response.bytes() {
+                                            Ok(bytes) => {
+                                                let file = File::create_new(cache_path).unwrap();
+                                                file.write_all_at(&bytes, 0).unwrap();
+
+                                                let decoder = png::Decoder::new_with_options(Cursor::new(bytes), decode_options);
+                                                let mut reader = decoder.read_info().unwrap();
+                                                let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+                                                let info = reader.next_frame(&mut buf).unwrap();
+                                                buf.truncate(info.buffer_size());
+                                                buf.shrink_to_fit();
+                                                Some((buf, info))
                                             }
+                                            Err(_) => None,
                                         }
                                     }
-                                    Err(err) => {
-                                        if let Some(callback) = rc_request.callback {
-                                            let mut rc_response: rc_api_server_response_t = unsafe { mem::zeroed() };
-                                            let msg = err.to_string() + "\nPlease check your internet connection";
-                                            rc_response.body = msg.as_ptr() as _;
-                                            rc_response.body_length = msg.len();
-                                            rc_response.http_status_code = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR as _;
-                                            unsafe { callback(&rc_response, rc_request.callback_data) };
-                                        }
-                                    }
+                                    Err(_) => None,
                                 }
-                            }
-                            Request::Event(rc_request) => {
-                                debug_assert!(!rc_request.badge_name.is_empty() && !rc_request.badge_url.is_empty());
-                                let game_info = unsafe { rc_client_get_game_info(ra_context.rc_client).as_ref().unwrap() };
-                                let hash = unsafe { CStr::from_ptr(game_info.hash).to_str().unwrap() };
+                            };
 
-                                let cache_path = ra_context.cache_dir.join(hash).join(&rc_request.badge_name);
-                                let mut decode_options = DecodeOptions::default();
-                                decode_options.set_ignore_checksums(true);
-                                let badge = if cache_path.exists() {
-                                    let decoder = png::Decoder::new_with_options(BufReader::new(File::open(cache_path).unwrap()), decode_options);
-                                    let mut reader = decoder.read_info().unwrap();
-                                    let mut buf = vec![0; reader.output_buffer_size().unwrap()];
-                                    let info = reader.next_frame(&mut buf).unwrap();
-                                    buf.truncate(info.buffer_size());
-                                    buf.shrink_to_fit();
-                                    Some((buf, info))
-                                } else {
-                                    let request = http_client.get(rc_request.badge_url).timeout(Duration::from_secs(20)).build().unwrap();
-                                    match http_client.execute(request) {
-                                        Ok(response) => {
-                                            fs::create_dir_all(ra_context.cache_dir.join(hash)).unwrap();
-
-                                            match response.bytes() {
-                                                Ok(bytes) => {
-                                                    let file = File::create_new(cache_path).unwrap();
-                                                    file.write_all_at(&bytes, 0).unwrap();
-
-                                                    let decoder = png::Decoder::new_with_options(Cursor::new(bytes), decode_options);
-                                                    let mut reader = decoder.read_info().unwrap();
-                                                    let mut buf = vec![0; reader.output_buffer_size().unwrap()];
-                                                    let info = reader.next_frame(&mut buf).unwrap();
-                                                    buf.truncate(info.buffer_size());
-                                                    buf.shrink_to_fit();
-                                                    Some((buf, info))
-                                                }
-                                                Err(_) => None,
-                                            }
-                                        }
-                                        Err(_) => None,
-                                    }
-                                };
-
-                                *ra_context.event.lock().unwrap() = (
-                                    RaEvent {
-                                        title: rc_request.title,
-                                        description: rc_request.description,
-                                        badge,
-                                    },
-                                    Instant::now(),
-                                );
-                            }
+                            *ra_context.event.lock().unwrap() = (
+                                RaEvent {
+                                    title: rc_request.title,
+                                    description: rc_request.description,
+                                    badge,
+                                },
+                                Instant::now(),
+                            );
                         }
                     }
                 }
@@ -419,7 +421,7 @@ impl RaContext {
     }
 
     pub fn stop_server_request_receive_thread(&self, thread_handle: JoinHandle<()>) {
-        self.active.store(false, Ordering::Relaxed);
+        self.active.store(false, Ordering::Release);
         thread_handle.join().unwrap();
     }
 }

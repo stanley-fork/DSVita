@@ -440,7 +440,7 @@ pub fn actual_main() {
             KeyBinding::new("Default".to_string(), Presenter::get_default_key_mapping()),
         ) {
             Some((cartridge_io, global_settings, settings, settings_file_path)) => (cartridge_io, global_settings, settings, settings_file_path),
-            None => return,
+            None => break,
         };
 
         if settings.retroachievements() {
